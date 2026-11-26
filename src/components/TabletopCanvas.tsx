@@ -205,6 +205,7 @@ export function TabletopCanvas({
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [isDragOverFile, setIsDragOverFile] = useState(false);
+  const [dragHoverCoords, setDragHoverCoords] = useState<{ nx: number; ny: number } | null>(null);
 
   // Hit-flash ticker so hit recoil auto-clears cleanly after ~600ms
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -225,25 +226,27 @@ export function TabletopCanvas({
   // Token image URL cache
   const [tokenImgUrls, setTokenImgUrls] = useState<Record<string, string>>({});
 
-  // Compute exact aspect-locked map box dimensions inside outerStageRef
+  // Pre-established fixed logical stage dimensions (1200 x referenceHeight).
+  // The internal coordinate space NEVER changes when the user zooms the web page with Ctrl + + / - / Wheel!
   const mapBoxSize = useMemo(() => {
+    const aspect = Number.isFinite(mediaAspect) && mediaAspect > 0.1 ? mediaAspect : 16 / 9;
+    return {
+      width: REFERENCE_MAP_WIDTH,
+      height: Math.max(240, Math.round(REFERENCE_MAP_WIDTH / aspect)),
+    };
+  }, [mediaAspect]);
+
+  // Uniform fit scale to display the fixed pre-established stage inside the container
+  const stageDisplayScale = useMemo(() => {
     const availW = Math.max(1, outerSize.width);
     const availH = Math.max(1, outerSize.height);
-    const aspect = Number.isFinite(mediaAspect) && mediaAspect > 0.1 ? mediaAspect : 16 / 9;
-    let width = availW;
-    let height = width / aspect;
-    if (height > availH) {
-      height = availH;
-      width = height * aspect;
-    }
-    return {
-      width: Math.max(1, Math.round(width)),
-      height: Math.max(1, Math.round(height)),
-    };
-  }, [outerSize.width, outerSize.height, mediaAspect]);
+    const scaleX = availW / mapBoxSize.width;
+    const scaleY = availH / mapBoxSize.height;
+    return Math.max(0.1, Math.min(scaleX, scaleY));
+  }, [outerSize.width, outerSize.height, mapBoxSize.width, mapBoxSize.height]);
 
-  // Scale factor relative to 1200px reference canvas width so token/grid/text sizes scale proportionally on any screen
-  const mapScale = mapBoxSize.width / REFERENCE_MAP_WIDTH;
+  // Internal scale factor is permanently locked to 1.0 (pre-established reference space)
+  const mapScale = 1;
 
   useEffect(() => {
     if (!draggingTokenId && !resizingState) {
@@ -324,7 +327,19 @@ export function TabletopCanvas({
       }
     });
     obs.observe(el);
-    return () => obs.disconnect();
+
+    // Block accidental Ctrl+Wheel browser zoom while hovering over the map stage so token/wall positioning stays 100% locked
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      obs.disconnect();
+      el.removeEventListener('wheel', handleWheel);
+    };
   }, []);
 
   // Support Ctrl+V (paste image directly onto tabletop!) and Delete/Backspace for selected layer
@@ -546,9 +561,11 @@ export function TabletopCanvas({
     if (!rect || rect.width === 0 || rect.height === 0) {
       return { px: 0, py: 0, nx: 0, ny: 0 };
     }
-    const px = Math.max(0, Math.min(rect.width, clientX - rect.left));
-    const py = Math.max(0, Math.min(rect.height, clientY - rect.top));
-    return { px, py, nx: px / rect.width, ny: py / rect.height };
+    const nx = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const ny = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+    const px = nx * mapBoxSize.width;
+    const py = ny * mapBoxSize.height;
+    return { px, py, nx, ny };
   }
 
   // Gently snap new wall endpoints to nearby existing wall corners for crisp room closures
@@ -1014,14 +1031,11 @@ export function TabletopCanvas({
     if (mode !== 'gm') return;
     e.preventDefault();
     e.stopPropagation();
-    const rect = mapBoxRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const rawX = e.clientX - rect.left;
-    const rawY = e.clientY - rect.top;
+    const { px: rawX, py: rawY } = getRelativeCoords(e.clientX, e.clientY);
     const popW = 284;
     const popH = 420;
-    const x = Math.max(10, Math.min(rect.width - popW - 10, rawX + 10));
-    const y = Math.max(10, Math.min(rect.height - popH - 10, rawY - 24));
+    const x = Math.max(10, Math.min(mapBoxSize.width - popW - 10, rawX + 10));
+    const y = Math.max(10, Math.min(mapBoxSize.height - popH - 10, rawY - 24));
     setSelectedTokenId(token.id);
     setContextMenu({ tokenId: token.id, x, y });
   }
@@ -1067,11 +1081,14 @@ export function TabletopCanvas({
     onTokensChange?.(next);
   }
 
-  // Drag & Drop image files directly from OS/Browser onto the Tabletop
+  // Drag & Drop tokens (from Vault / Character Sheets / New Token Builder) OR image files directly onto the exact spot on the Tabletop!
   function handleDragOver(e: React.DragEvent) {
     if (mode !== 'gm') return;
     e.preventDefault();
     e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+    const { nx, ny } = getRelativeCoords(e.clientX, e.clientY);
+    setDragHoverCoords({ nx, ny });
     if (!isDragOverFile) setIsDragOverFile(true);
   }
 
@@ -1079,7 +1096,12 @@ export function TabletopCanvas({
     if (mode !== 'gm') return;
     e.preventDefault();
     e.stopPropagation();
+    const related = e.relatedTarget as Node | null;
+    if (related && outerStageRef.current?.contains(related)) {
+      return;
+    }
     setIsDragOverFile(false);
+    setDragHoverCoords(null);
   }
 
   async function handleDrop(e: React.DragEvent) {
@@ -1087,12 +1109,71 @@ export function TabletopCanvas({
     e.preventDefault();
     e.stopPropagation();
     setIsDragOverFile(false);
+    setDragHoverCoords(null);
 
     const { nx, ny } = getRelativeCoords(e.clientX, e.clientY);
+    const clampedX = Number(Math.max(0.03, Math.min(0.97, nx)).toFixed(4));
+    const clampedY = Number(Math.max(0.03, Math.min(0.97, ny)).toFixed(4));
+
+    // 1. Check if the user dragged a Token / Asset from the Vault, Character Sheets, or New Token Builder
+    const tokenPayloadRaw = e.dataTransfer.getData('application/x-folio-token');
+    if (tokenPayloadRaw && scene) {
+      try {
+        const parsed = JSON.parse(tokenPayloadRaw) as Partial<SceneToken> & {
+          saveToVaultOnDrop?: boolean;
+        };
+        const isRect = parsed.shape === 'rect' || parsed.layerKind === 'image';
+        const w = parsed.widthPx || parsed.sizePx || (isRect ? 120 : 56);
+        const h = parsed.heightPx || parsed.sizePx || (isRect ? 120 : 56);
+
+        const droppedToken: SceneToken = {
+          id: `tok_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+          name: (parsed.name || 'Token').trim(),
+          layerKind: parsed.layerKind || (isRect ? 'image' : 'token'),
+          shape: parsed.shape || (isRect ? 'rect' : 'circle'),
+          sheetId: parsed.sheetId,
+          x: clampedX,
+          y: clampedY,
+          sizePx: Math.max(w, h),
+          widthPx: w,
+          heightPx: h,
+          color: parsed.color || '#8f2d2d',
+          outlineStyle: parsed.outlineStyle || (isRect ? 'none' : 'solid'),
+          outlineColor: parsed.outlineColor || parsed.color || '#8f2d2d',
+          shadow: parsed.shadow || 'soft',
+          imageUrl: parsed.imageUrl || '',
+          mediaId: parsed.mediaId || '',
+          notes: parsed.notes || '',
+          hiddenFromPlayers: Boolean(parsed.hiddenFromPlayers),
+          visionEnabled:
+            typeof parsed.visionEnabled === 'boolean'
+              ? parsed.visionEnabled
+              : Boolean(
+                  parsed.sheetId && (scene.category === 'tactical' || scene.dynamicVision)
+                ),
+          visionRadius: parsed.visionRadius || 0.34,
+        };
+
+        const next = [...localTokens, droppedToken];
+        setLocalTokens(next);
+        setSelectedTokenId(droppedToken.id);
+        onToolChange?.('move');
+        onTokensChange?.(next);
+        if (parsed.saveToVaultOnDrop && (droppedToken.imageUrl || droppedToken.mediaId)) {
+          onSaveToVault?.(droppedToken);
+        }
+        onNotify?.(`"${droppedToken.name}" posicionado exatamente onde você soltou!`);
+        return;
+      } catch {
+        // Fall through to file drop if payload wasn't valid JSON
+      }
+    }
+
+    // 2. Otherwise check if the user dragged an image file from their computer/browser
     const files = Array.from(e.dataTransfer.files || []);
     const imgFile = files.find((f) => f.type.startsWith('image/'));
     if (imgFile) {
-      await handleQuickInsertImageFile(imgFile, nx, ny);
+      await handleQuickInsertImageFile(imgFile, clampedX, clampedY);
     }
   }
 
@@ -1273,16 +1354,6 @@ export function TabletopCanvas({
       onDrop={(e) => void handleDrop(e)}
       className="relative w-full h-full overflow-hidden select-none touch-none bg-stone-950 flex items-center justify-center"
     >
-      {/* Drag & Drop File Overlay Indicator */}
-      {mode === 'gm' && isDragOverFile && (
-        <div className="absolute inset-3 z-50 border-2 border-dashed border-amber-400 bg-black/70 flex flex-col items-center justify-center gap-2 pointer-events-none text-stone-100">
-          <Upload className="w-8 h-8 text-amber-400" />
-          <p className="text-sm font-bold font-typewriter">
-            Solte a imagem para adicionar ao mapa e salvar no Acervo
-          </p>
-        </div>
-      )}
-
       {/* Duel Pair Selection Banner */}
       {mode === 'gm' && (activeTool === 'duel' || duelCandidateId) && (
         <div
@@ -1318,7 +1389,7 @@ export function TabletopCanvas({
         </div>
       )}
 
-      {/* Exact Aspect-Locked Map Coordinate Stage (100% consistent between GM & Shared TV Screen) */}
+      {/* Pre-Established Fixed Logical Coordinate Stage (1200 x referenceHeight, scaled uniformly) */}
       <div
         ref={mapBoxRef}
         onPointerDown={handleStagePointerDown}
@@ -1339,9 +1410,31 @@ export function TabletopCanvas({
         style={{
           width: `${mapBoxSize.width}px`,
           height: `${mapBoxSize.height}px`,
+          transform: `scale(${stageDisplayScale})`,
+          transformOrigin: 'center center',
         }}
-        className={`relative overflow-hidden shadow-2xl bg-stone-950 ${cursorClass}`}
+        className={`relative overflow-hidden shadow-2xl bg-stone-950 shrink-0 ${cursorClass}`}
       >
+        {/* Live Drag-and-Drop Target Reticle on the Map before placing token/image */}
+        {mode === 'gm' && isDragOverFile && dragHoverCoords && (
+          <div className="absolute inset-0 z-50 pointer-events-none border-2 border-dashed border-amber-400/90 bg-black/20">
+            <div
+              style={{
+                left: `${dragHoverCoords.nx * 100}%`,
+                top: `${dragHoverCoords.ny * 100}%`,
+                transform: 'translate(-50%, -50%)',
+              }}
+              className="absolute flex flex-col items-center gap-1.5"
+            >
+              <div className="w-16 h-16 rounded-full border-2 border-amber-400 bg-amber-500/25 shadow-[0_0_24px_rgba(251,191,36,0.75)] flex items-center justify-center">
+                <Upload className="w-6 h-6 text-amber-300" />
+              </div>
+              <span className="px-2.5 py-1 text-xs font-bold font-typewriter bg-stone-950/95 border border-amber-400 text-amber-200 whitespace-nowrap shadow-xl">
+                Solte aqui para posicionar na cena
+              </span>
+            </div>
+          </div>
+        )}
         {/* Scene Background: Supports Video (.mp4/.webm), Animated GIF, and Static Images */}
         {bgUrl && !mediaError ? (
           resolvedMediaKind === 'video' ? (

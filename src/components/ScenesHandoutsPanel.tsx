@@ -10,11 +10,15 @@ import {
   Eye,
   EyeOff,
   Film,
+  Folder,
+  FolderPlus,
+  GripVertical,
   Image as ImageIcon,
   ImagePlus,
   Link2,
   Lock,
   Maximize2,
+  Pencil,
   Plus,
   Send,
   SlidersHorizontal,
@@ -48,7 +52,14 @@ import {
 } from '../lib/mediaStore';
 import { detectSceneMediaKind, type MediaOptimizeProfile } from '../lib/mediaOptimizer';
 import { getAllDuelArenaPresets, loadCustomDuelPresets } from '../lib/duelEngine';
-import type { VaultAssetItem } from '../lib/assetVault';
+import {
+  addVaultFolder,
+  deleteVaultFolder,
+  loadVaultFolders,
+  moveAssetToVaultFolder,
+  renameVaultFolder,
+  type VaultAssetItem,
+} from '../lib/assetVault';
 import { TokenEditorPanel, TOKEN_SWATCH_COLORS } from './TokenEditorPanel';
 
 interface ScenesHandoutsPanelProps {
@@ -77,8 +88,9 @@ interface ScenesHandoutsPanelProps {
   onDeleteScene: (sceneId: string) => Promise<void>;
   onAddTokenToScene: (token: SceneToken) => Promise<void>;
   onUpdateSceneTokens: (tokens: SceneToken[]) => Promise<void>;
-  onSaveTokenToVault: (token: SceneToken) => void;
+  onSaveTokenToVault: (token: SceneToken, folder?: string) => void;
   onRemoveVaultAsset: (assetId: string) => void;
+  onSyncVaultAssets?: (nextAssets: VaultAssetItem[]) => void;
   onCreateHandout: (data: {
     title: string;
     kind: HandoutKind;
@@ -227,6 +239,7 @@ export function ScenesHandoutsPanel({
   onUpdateSceneTokens,
   onSaveTokenToVault,
   onRemoveVaultAsset,
+  onSyncVaultAssets,
   onCreateHandout,
   onProjectHandout,
   onSendHandoutToPlayer,
@@ -242,6 +255,20 @@ export function ScenesHandoutsPanel({
   const [showHandoutForm, setShowHandoutForm] = useState(false);
   const [showNewTokenForm, setShowNewTokenForm] = useState(false);
   const [editingTokenId, setEditingTokenId] = useState<string | null>(null);
+
+  // Multi-Folder Asset Vault state (Pastas de Acervos de Tokens)
+  const [vaultFolders, setVaultFolders] = useState<string[]>(() =>
+    loadVaultFolders(uploadContext.campaignId)
+  );
+  const [activeVaultFolder, setActiveVaultFolder] = useState<string>('ALL');
+  const [showNewFolderInput, setShowNewFolderInput] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [renamingFolder, setRenamingFolder] = useState<string | null>(null);
+  const [renameFolderValue, setRenameFolderValue] = useState('');
+
+  useEffect(() => {
+    setVaultFolders(loadVaultFolders(uploadContext.campaignId));
+  }, [uploadContext.campaignId, vaultAssets.length]);
 
   // New scene form (supports image, GIF, and MP4/WebM video)
   const [sceneName, setSceneName] = useState('');
@@ -265,6 +292,7 @@ export function ScenesHandoutsPanel({
   const [tokenNotes, setTokenNotes] = useState('');
   const [tokenHidden, setTokenHidden] = useState(false);
   const [tokenVision, setTokenVision] = useState(false);
+  const [tokenVaultFolder, setTokenVaultFolder] = useState<string>('Tokens');
 
   // New handout form
   const [hTitle, setHTitle] = useState('');
@@ -304,6 +332,52 @@ export function ScenesHandoutsPanel({
   const players = members.filter((m) => m.role === 'player');
 
   const editingToken = activeScene?.tokens.find((t) => t.id === editingTokenId) || null;
+
+  function handleCreateVaultFolder(e: React.FormEvent) {
+    e.preventDefault();
+    const clean = newFolderName.trim();
+    if (!clean) return;
+    const nextFolders = addVaultFolder(uploadContext.campaignId, clean);
+    setVaultFolders(nextFolders);
+    setActiveVaultFolder(clean);
+    setTokenVaultFolder(clean);
+    setNewFolderName('');
+    setShowNewFolderInput(false);
+    onNotify(`Pasta de acervo "${clean}" criada.`);
+  }
+
+  function handleConfirmRenameFolder(oldName: string) {
+    const clean = renameFolderValue.trim();
+    if (!clean || clean === oldName) {
+      setRenamingFolder(null);
+      return;
+    }
+    const { folders, assets } = renameVaultFolder(uploadContext.campaignId, oldName, clean);
+    setVaultFolders(folders);
+    onSyncVaultAssets?.(assets);
+    if (activeVaultFolder === oldName) setActiveVaultFolder(clean);
+    if (tokenVaultFolder === oldName) setTokenVaultFolder(clean);
+    setRenamingFolder(null);
+    onNotify(`Pasta renomeada para "${clean}".`);
+  }
+
+  function handleDeleteFolder(folderName: string) {
+    if (vaultFolders.length <= 1) {
+      onNotify('Mantenha pelo menos uma pasta no acervo.');
+      return;
+    }
+    const { folders, assets } = deleteVaultFolder(uploadContext.campaignId, folderName);
+    setVaultFolders(folders);
+    onSyncVaultAssets?.(assets);
+    if (activeVaultFolder === folderName) setActiveVaultFolder('ALL');
+    onNotify(`Pasta "${folderName}" removida (itens movidos para "${folders[0]}").`);
+  }
+
+  function handleMoveAssetFolder(assetId: string, nextFolder: string) {
+    const nextAssets = moveAssetToVaultFolder(uploadContext.campaignId, assetId, nextFolder);
+    onSyncVaultAssets?.(nextAssets);
+    onNotify(`Item movido para a pasta "${nextFolder}".`);
+  }
 
   async function handleFileUpload(
     file: File | undefined,
@@ -422,23 +496,25 @@ export function ScenesHandoutsPanel({
 
   async function handleDirectVaultUpload(file: File | undefined) {
     if (!file) return;
+    const targetFolder =
+      activeVaultFolder !== 'ALL' ? activeVaultFolder : vaultFolders[0] || 'Tokens';
     await handleFileUpload(file, 'handout', (res) => {
       const cleanName = file.name.replace(/\.[^.]+$/, '').slice(0, 48) || 'Item do Acervo';
       const tokenLike: SceneToken = {
         id: `vlt_${Date.now().toString(36)}`,
         name: cleanName,
-        layerKind: 'image',
-        shape: 'rect',
+        layerKind: 'token',
+        shape: 'circle',
         x: 0.5,
         y: 0.5,
-        sizePx: 130,
-        widthPx: 130,
-        heightPx: 130,
+        sizePx: 64,
+        widthPx: 64,
+        heightPx: 64,
         color: '#8f2d2d',
         imageUrl: res.url,
         mediaId: res.mediaId,
       };
-      onSaveTokenToVault(tokenLike);
+      onSaveTokenToVault(tokenLike, targetFolder);
     });
   }
 
@@ -470,7 +546,9 @@ export function ScenesHandoutsPanel({
     };
     await onAddTokenToScene(token);
     if (token.imageUrl || token.mediaId) {
-      onSaveTokenToVault(token);
+      const targetFolder =
+        tokenVaultFolder || (activeVaultFolder !== 'ALL' ? activeVaultFolder : 'Tokens');
+      onSaveTokenToVault(token, targetFolder);
     }
     setTokenName('');
     setTokenUrl('');
@@ -525,6 +603,11 @@ export function ScenesHandoutsPanel({
     setShowHandoutForm(false);
     onNotify('Pista salva na biblioteca.');
   }
+
+  const filteredVaultAssets =
+    activeVaultFolder === 'ALL'
+      ? vaultAssets
+      : vaultAssets.filter((a) => (a.folder || 'Tokens') === activeVaultFolder);
 
   return (
     <div className="h-full flex flex-col">
@@ -882,40 +965,193 @@ export function ScenesHandoutsPanel({
 
         {tab === 'layers' && (
           <>
-            {/* Quick Drag & Paste Tip + Asset Vault (Acervo de Fotos & Itens) */}
+            {/* Multi-Folder Asset Vault (Pastas de Acervos de Tokens & Fotos) with Direct Drag-and-Drop onto Map */}
             <div className="border vtt-border p-3 space-y-2.5 vtt-canvas">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs font-semibold flex items-center gap-1.5">
                   <Bookmark className="w-3.5 h-3.5 vtt-accent-text" />
-                  Acervo de Itens & Fotos ({vaultAssets.length})
+                  Acervos de Tokens ({filteredVaultAssets.length}/{vaultAssets.length})
                 </p>
-                <label className="px-2 py-1 text-[11px] font-semibold vtt-accent-btn cursor-pointer flex items-center gap-1 whitespace-nowrap">
-                  <Plus className="w-3 h-3" />
-                  <span>{uploading ? `${uploadPct}%` : 'Guardar foto'}</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    disabled={uploading}
-                    onChange={(e) => {
-                      void handleDirectVaultUpload(e.target.files?.[0]);
-                      e.target.value = '';
-                    }}
-                  />
-                </label>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowNewFolderInput((v) => !v)}
+                    className="px-2 py-1 text-[11px] border vtt-border vtt-surface hover:opacity-80 flex items-center gap-1 whitespace-nowrap"
+                    title="Criar nova pasta de acervo de tokens"
+                  >
+                    <FolderPlus className="w-3 h-3 vtt-accent-text" />
+                    <span>+ Pasta</span>
+                  </button>
+                  <label className="px-2 py-1 text-[11px] font-semibold vtt-accent-btn cursor-pointer flex items-center gap-1 whitespace-nowrap">
+                    <Plus className="w-3 h-3" />
+                    <span>{uploading ? `${uploadPct}%` : 'Guardar'}</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      disabled={uploading}
+                      onChange={(e) => {
+                        void handleDirectVaultUpload(e.target.files?.[0]);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                </div>
               </div>
+
+              {/* Create New Vault Folder Inline Form */}
+              {showNewFolderInput && (
+                <form onSubmit={handleCreateVaultFolder} className="flex items-center gap-1.5 pt-1">
+                  <input
+                    type="text"
+                    autoFocus
+                    value={newFolderName}
+                    onChange={(e) => setNewFolderName(e.target.value)}
+                    placeholder="Nome da pasta (ex: Chefes, Guardas, Magias)"
+                    className="flex-1 px-2.5 py-1 text-xs border vtt-border vtt-surface"
+                  />
+                  <button
+                    type="submit"
+                    className="px-2.5 py-1 text-xs font-semibold vtt-accent-btn"
+                  >
+                    Criar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowNewFolderInput(false)}
+                    className="px-2 py-1 text-xs border vtt-border vtt-surface"
+                  >
+                    ×
+                  </button>
+                </form>
+              )}
+
+              {/* Sectorized Folder Tabs */}
+              <div className="flex items-center gap-1 flex-wrap pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => setActiveVaultFolder('ALL')}
+                  className={`px-2 py-1 text-[11px] border flex items-center gap-1 ${
+                    activeVaultFolder === 'ALL'
+                      ? 'vtt-accent-btn border-transparent font-semibold'
+                      : 'vtt-surface vtt-border vtt-muted hover:opacity-100'
+                  }`}
+                >
+                  <Folder className="w-3 h-3" />
+                  <span>Todas ({vaultAssets.length})</span>
+                </button>
+                {vaultFolders.map((folder) => {
+                  const count = vaultAssets.filter(
+                    (a) => (a.folder || 'Tokens') === folder
+                  ).length;
+                  const isActive = activeVaultFolder === folder;
+                  return (
+                    <div key={folder} className="inline-flex items-center">
+                      {renamingFolder === folder ? (
+                        <div className="flex items-center border vtt-border vtt-surface px-1 py-0.5">
+                          <input
+                            type="text"
+                            autoFocus
+                            value={renameFolderValue}
+                            onChange={(e) => setRenameFolderValue(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleConfirmRenameFolder(folder);
+                              if (e.key === 'Escape') setRenamingFolder(null);
+                            }}
+                            className="w-24 text-[11px] bg-transparent focus:outline-none px-1"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleConfirmRenameFolder(folder)}
+                            className="text-[10px] font-bold px-1 text-emerald-500"
+                          >
+                            OK
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setActiveVaultFolder(folder)}
+                          className={`px-2 py-1 text-[11px] border flex items-center gap-1 ${
+                            isActive
+                              ? 'vtt-accent-btn border-transparent font-semibold'
+                              : 'vtt-surface vtt-border vtt-muted hover:opacity-100'
+                          }`}
+                        >
+                          <Folder className="w-3 h-3" />
+                          <span>
+                            {folder} ({count})
+                          </span>
+                        </button>
+                      )}
+                      {isActive && renamingFolder !== folder && (
+                        <div className="flex items-center border border-l-0 vtt-border vtt-surface">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRenamingFolder(folder);
+                              setRenameFolderValue(folder);
+                            }}
+                            className="p-1 vtt-muted hover:opacity-100"
+                            title="Renomear pasta"
+                          >
+                            <Pencil className="w-2.5 h-2.5" />
+                          </button>
+                          {vaultFolders.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteFolder(folder)}
+                              className="p-1 vtt-muted hover:text-red-500"
+                              title="Excluir pasta"
+                            >
+                              <Trash2 className="w-2.5 h-2.5" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
               <p className="text-[11px] vtt-muted leading-relaxed">
-                Arraste qualquer imagem direto para o mapa ou pressione <strong>Ctrl+V</strong> para colar. Elas ficam salvas aqui para replicar em 1 clique.
+                <strong>Arraste qualquer card abaixo direto para o mapa</strong> para posicioná-lo onde quiser antes de soltar (ou clique em + Token / + Foto).
               </p>
 
-              {vaultAssets.length > 0 && (
-                <div className="grid grid-cols-3 gap-2 pt-1 max-h-52 overflow-y-auto">
-                  {vaultAssets.map((asset) => {
+              {filteredVaultAssets.length > 0 ? (
+                <div className="grid grid-cols-3 gap-2 pt-1 max-h-60 overflow-y-auto">
+                  {filteredVaultAssets.map((asset) => {
                     const thumb = vaultThumbUrls[asset.id] || asset.imageUrl;
                     return (
                       <div
                         key={asset.id}
-                        className="group relative border vtt-border vtt-surface overflow-hidden flex flex-col"
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = 'copy';
+                          e.dataTransfer.setData(
+                            'application/x-folio-token',
+                            JSON.stringify({
+                              name: asset.name,
+                              layerKind: asset.defaultKind === 'image' ? 'image' : 'token',
+                              shape: asset.defaultKind === 'image' ? 'rect' : 'circle',
+                              widthPx:
+                                asset.defaultKind === 'image' ? asset.widthPx || 120 : 58,
+                              heightPx:
+                                asset.defaultKind === 'image' ? asset.heightPx || 120 : 58,
+                              sizePx:
+                                asset.defaultKind === 'image'
+                                  ? Math.max(asset.widthPx || 120, asset.heightPx || 120)
+                                  : 58,
+                              color: '#8f2d2d',
+                              outlineStyle: asset.defaultKind === 'image' ? 'none' : 'solid',
+                              outlineColor: '#8f2d2d',
+                              imageUrl: asset.imageUrl,
+                              mediaId: asset.mediaId,
+                            })
+                          );
+                        }}
+                        className="group relative border vtt-border vtt-surface overflow-hidden flex flex-col cursor-grab active:cursor-grabbing"
+                        title="Arraste direto para o mapa onde deseja posicionar!"
                       >
                         <div className="h-16 w-full bg-stone-900 overflow-hidden relative">
                           {thumb ? (
@@ -923,13 +1159,18 @@ export function ScenesHandoutsPanel({
                               src={thumb}
                               alt={asset.name}
                               referrerPolicy="no-referrer"
-                              className="w-full h-full object-cover"
+                              draggable={false}
+                              className="w-full h-full object-cover pointer-events-none"
                             />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center text-stone-500">
                               <ImageIcon className="w-4 h-4" />
                             </div>
                           )}
+                          <span className="absolute top-1 left-1 px-1 py-0.5 bg-black/75 text-[9px] text-amber-300 flex items-center gap-0.5 pointer-events-none">
+                            <GripVertical className="w-2.5 h-2.5" />
+                            Arrastar
+                          </span>
                           <button
                             type="button"
                             onClick={() => onRemoveVaultAsset(asset.id)}
@@ -939,53 +1180,107 @@ export function ScenesHandoutsPanel({
                             <X className="w-3 h-3" />
                           </button>
                         </div>
-                        <p className="px-1.5 py-1 text-[10px] font-semibold truncate">{asset.name}</p>
+                        <p className="px-1.5 pt-1 text-[10px] font-semibold truncate">
+                          {asset.name}
+                        </p>
+                        {/* Sector Folder Mover Dropdown */}
+                        <div className="px-1 pb-1">
+                          <select
+                            value={asset.folder || 'Tokens'}
+                            onChange={(e) => handleMoveAssetFolder(asset.id, e.target.value)}
+                            className="w-full text-[9px] px-1 py-0.5 border vtt-border vtt-canvas vtt-muted"
+                            title="Mover para outra pasta do acervo"
+                          >
+                            {vaultFolders.map((f) => (
+                              <option key={f} value={f}>
+                                📁 {f}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
                         <div className="grid grid-cols-2 border-t vtt-border text-[10px]">
                           <button
                             type="button"
-                            onClick={() => void handleSpawnFromVault(asset, false)}
-                            className="py-1 hover:vtt-subtle font-semibold text-center border-r vtt-border"
-                            title="Colocar como imagem livre redimensionável"
-                          >
-                            + Foto
-                          </button>
-                          <button
-                            type="button"
                             onClick={() => void handleSpawnFromVault(asset, true)}
-                            className="py-1 hover:vtt-subtle text-center"
+                            className="py-1 hover:vtt-subtle font-semibold text-center border-r vtt-border"
                             title="Colocar como token circular"
                           >
                             + Token
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleSpawnFromVault(asset, false)}
+                            className="py-1 hover:vtt-subtle text-center"
+                            title="Colocar como imagem livre redimensionável"
+                          >
+                            + Foto
                           </button>
                         </div>
                       </div>
                     );
                   })}
                 </div>
+              ) : (
+                <p className="text-[11px] vtt-muted py-3 text-center border border-dashed vtt-border">
+                  Nenhum token/item nesta pasta. Clique em <strong>Guardar</strong> ou salve tokens do mapa no Acervo.
+                </p>
               )}
             </div>
 
-            {/* Quick 1-Click Add from Player Character Sheets */}
+            {/* Quick 1-Click Add OR Drag-and-Drop from Player Character Sheets */}
             {sheets.length > 0 && activeScene && (
               <div className="border vtt-border p-3 space-y-2 vtt-canvas">
-                <p className="text-xs font-semibold flex items-center gap-1.5">
-                  <UserCheck className="w-3.5 h-3.5 vtt-accent-text" />
-                  Personagens da campanha
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold flex items-center gap-1.5">
+                    <UserCheck className="w-3.5 h-3.5 vtt-accent-text" />
+                    Personagens da campanha
+                  </p>
+                  <span className="text-[10px] vtt-muted">Arraste para o mapa ou clique</span>
+                </div>
                 <div className="space-y-1.5">
                   {sheets.map((s) => {
                     const alreadyOnScene = activeScene.tokens.some((t) => t.sheetId === s.id);
                     return (
                       <div
                         key={s.id}
-                        className="flex items-center justify-between gap-2 border vtt-border vtt-surface px-2.5 py-1.5"
+                        draggable
+                        onDragStart={(e) => {
+                          e.dataTransfer.effectAllowed = 'copy';
+                          e.dataTransfer.setData(
+                            'application/x-folio-token',
+                            JSON.stringify({
+                              name: s.name,
+                              layerKind: 'token',
+                              shape: 'circle',
+                              sheetId: s.id,
+                              widthPx: 54,
+                              heightPx: 54,
+                              sizePx: 54,
+                              color: '#2f5d46',
+                              outlineStyle: 'solid',
+                              outlineColor: '#2f5d46',
+                              imageUrl: s.avatarUrl || '',
+                              mediaId: s.avatarMediaId || '',
+                              notes: s.subtitle || '',
+                              visionEnabled:
+                                activeScene.category === 'tactical' ||
+                                Boolean(activeScene.dynamicVision),
+                              visionRadius: 0.34,
+                            })
+                          );
+                        }}
+                        className="flex items-center justify-between gap-2 border vtt-border vtt-surface px-2.5 py-1.5 cursor-grab active:cursor-grabbing"
+                        title="Arraste este personagem direto para o ponto do mapa onde deseja posicioná-lo!"
                       >
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold truncate">{s.name}</p>
-                          <p className="text-[10px] vtt-muted truncate">
-                            {s.ownerName}
-                            {s.subtitle ? ` · ${s.subtitle}` : ''}
-                          </p>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <GripVertical className="w-3.5 h-3.5 vtt-muted shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold truncate">{s.name}</p>
+                            <p className="text-[10px] vtt-muted truncate">
+                              {s.ownerName}
+                              {s.subtitle ? ` · ${s.subtitle}` : ''}
+                            </p>
+                          </div>
                         </div>
                         <button
                           type="button"
@@ -1018,7 +1313,12 @@ export function ScenesHandoutsPanel({
                   void onUpdateSceneTokens(next);
                 }}
                 onShowPopup={(h) => void onProjectHandout(h)}
-                onSaveToVault={onSaveTokenToVault}
+                onSaveToVault={(tok) =>
+                  onSaveTokenToVault(
+                    tok,
+                    activeVaultFolder !== 'ALL' ? activeVaultFolder : undefined
+                  )
+                }
                 onDelete={() => {
                   const next = activeScene.tokens.filter((t) => t.id !== editingToken.id);
                   setEditingTokenId(null);
@@ -1055,7 +1355,7 @@ export function ScenesHandoutsPanel({
 
                 {activeScene.tokens.length === 0 ? (
                   <p className="text-xs vtt-muted py-3 text-center border vtt-border vtt-canvas">
-                    Nenhuma camada nesta cena. Arraste uma imagem para o mapa, use o Pincel/Texto ou crie um token abaixo.
+                    Nenhuma camada nesta cena. Arraste um token do Acervo para o mapa, use o Pincel/Texto ou crie um token abaixo.
                   </p>
                 ) : (
                   <ul className="divide-y vtt-border border vtt-border vtt-surface">
@@ -1188,7 +1488,7 @@ export function ScenesHandoutsPanel({
               </div>
             )}
 
-            {/* Collapsible Create Manual NPC / Prop Layer */}
+            {/* Collapsible Create Manual NPC / Prop Layer (Supports Dragging Token to Map Before Placing!) */}
             <div className="border-t vtt-border pt-3">
               <button
                 type="button"
@@ -1263,8 +1563,26 @@ export function ScenesHandoutsPanel({
                     ))}
                   </div>
 
+                  {/* Select Vault Folder to Save Token Into */}
+                  <label className="block space-y-1">
+                    <span className="text-[11px] font-semibold vtt-muted">
+                      Pasta do Acervo para salvar:
+                    </span>
+                    <select
+                      value={tokenVaultFolder}
+                      onChange={(e) => setTokenVaultFolder(e.target.value)}
+                      className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface"
+                    >
+                      {vaultFolders.map((f) => (
+                        <option key={f} value={f}>
+                          📁 {f}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
                   <MediaUploaderBox
-                    label="Imagem (salva automaticamente no Acervo)"
+                    label="Imagem (salva automaticamente na pasta do Acervo)"
                     accept="image/*"
                     buttonLabel="Escolher foto do computador"
                     previewUrl={tokenPreview || tokenUrl}
@@ -1323,13 +1641,108 @@ export function ScenesHandoutsPanel({
                       <span>Emite campo de visão (respeita muros e portas)</span>
                     </label>
                   </div>
-                  <button
-                    type="submit"
-                    disabled={!tokenName.trim() || !activeScene || uploading}
-                    className="w-full py-2.5 text-xs font-semibold vtt-accent-btn disabled:opacity-60"
+
+                  {/* Draggable Live Token Preview Card: Drag onto map to place anywhere before clicking Add! */}
+                  <div
+                    draggable
+                    onDragStart={(e) => {
+                      const isRect = tokenShape === 'rect';
+                      const baseSize = isRect ? 120 : 54;
+                      e.dataTransfer.effectAllowed = 'copy';
+                      e.dataTransfer.setData(
+                        'application/x-folio-token',
+                        JSON.stringify({
+                          name: tokenName.trim() || 'Novo Token',
+                          layerKind: isRect ? 'image' : 'token',
+                          shape: tokenShape,
+                          sizePx: baseSize,
+                          widthPx: baseSize,
+                          heightPx: baseSize,
+                          color: tokenColor,
+                          outlineStyle: isRect ? 'none' : 'solid',
+                          outlineColor: tokenColor,
+                          shadow: 'soft',
+                          imageUrl: tokenUrl.trim() || '',
+                          mediaId: tokenMediaId || '',
+                          notes: tokenNotes.trim() || '',
+                          hiddenFromPlayers: tokenHidden,
+                          visionEnabled: tokenVision,
+                          visionRadius: 0.34,
+                          saveToVaultOnDrop: true,
+                        })
+                      );
+                    }}
+                    className="p-2.5 border border-dashed border-amber-500/80 vtt-surface flex items-center justify-between gap-2.5 cursor-grab active:cursor-grabbing"
+                    title="Arraste esta prévia direto para o mapa onde quiser posicionar o token!"
                   >
-                    Adicionar à cena
-                  </button>
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div
+                        className={`w-9 h-9 shrink-0 overflow-hidden flex items-center justify-center text-xs font-bold text-white border-2 ${
+                          tokenShape === 'rect' ? 'rounded-none' : 'rounded-full'
+                        }`}
+                        style={{
+                          backgroundColor: tokenColor,
+                          borderColor: tokenColor,
+                        }}
+                      >
+                        {tokenPreview || tokenUrl ? (
+                          <img
+                            src={tokenPreview || tokenUrl}
+                            alt="Prévia"
+                            draggable={false}
+                            className="w-full h-full object-cover pointer-events-none"
+                          />
+                        ) : (
+                          (tokenName.trim() || 'TK').slice(0, 2).toUpperCase()
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold truncate">
+                          {tokenName.trim() || 'Arraste para posicionar no mapa'}
+                        </p>
+                        <p className="text-[10px] vtt-muted">
+                          Segure e arraste este bloco até o ponto desejado da cena
+                        </p>
+                      </div>
+                    </div>
+                    <GripVertical className="w-4 h-4 vtt-accent-text shrink-0" />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      disabled={(!tokenUrl.trim() && !tokenMediaId) || uploading}
+                      onClick={() => {
+                        const isRect = tokenShape === 'rect';
+                        const baseSize = isRect ? 120 : 54;
+                        const vaultOnlyToken: SceneToken = {
+                          id: `vlt_${Date.now().toString(36)}`,
+                          name: tokenName.trim() || 'Token do Acervo',
+                          layerKind: isRect ? 'image' : 'token',
+                          shape: tokenShape,
+                          x: 0.5,
+                          y: 0.5,
+                          sizePx: baseSize,
+                          widthPx: baseSize,
+                          heightPx: baseSize,
+                          color: tokenColor,
+                          imageUrl: tokenUrl.trim() || '',
+                          mediaId: tokenMediaId || '',
+                        };
+                        onSaveTokenToVault(vaultOnlyToken, tokenVaultFolder);
+                      }}
+                      className="py-2.5 px-2 text-xs font-semibold border vtt-border vtt-surface hover:opacity-85 disabled:opacity-50"
+                    >
+                      Só Guardar no Acervo
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!tokenName.trim() || !activeScene || uploading}
+                      className="py-2.5 px-2 text-xs font-semibold vtt-accent-btn disabled:opacity-60"
+                    >
+                      Adicionar ao Centro
+                    </button>
+                  </div>
                 </form>
               )}
             </div>

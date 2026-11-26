@@ -449,7 +449,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     notify('Refeito (Ctrl+Y)');
   }
 
-  function handleSaveTokenToVault(token: SceneToken) {
+  function handleSaveTokenToVault(token: SceneToken, folder?: string) {
     if (!token.imageUrl && !token.mediaId) return;
     const next = saveAssetToVault(campaignId, {
       name: token.name || 'Item',
@@ -458,6 +458,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       defaultKind: token.layerKind === 'image' || token.shape === 'rect' ? 'image' : 'token',
       widthPx: token.widthPx || token.sizePx || 120,
       heightPx: token.heightPx || token.sizePx || 120,
+      folder,
     });
     setVaultAssets(next);
   }
@@ -1827,13 +1828,16 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 onUpdateSceneTokens={async (tokens) => {
                   await handleTokensChange(tokens);
                 }}
-                onSaveTokenToVault={(tok) => {
-                  handleSaveTokenToVault(tok);
-                  notify(`"${tok.name}" salvo no Acervo.`);
+                onSaveTokenToVault={(tok, folder) => {
+                  handleSaveTokenToVault(tok, folder);
+                  notify(`"${tok.name}" salvo na pasta "${folder || 'Tokens'}" do Acervo.`);
                 }}
                 onRemoveVaultAsset={(id) => {
                   handleRemoveVaultAsset(id);
                   notify('Item removido do Acervo.');
+                }}
+                onSyncVaultAssets={(next) => {
+                  setVaultAssets(next);
                 }}
                 onCreateHandout={async (data) => {
                   await createHandout({

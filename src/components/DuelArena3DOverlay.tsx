@@ -995,9 +995,22 @@ export function DuelArena3DOverlay({
 
   // Subtle 3D Mouse Parallax
   const [mouseTilt, setMouseTilt] = useState<{ rx: number; ry: number }>({ rx: 0, ry: 0 });
+  const [arenaOuterSize, setArenaOuterSize] = useState<{ width: number; height: number }>({
+    width: 1280,
+    height: 720,
+  });
+
+  // Pre-established fixed 16:9 3D Duel Stage dimensions (1280 x 720) so browser Ctrl+Zoom never shifts characters or floor
+  const DUEL_STAGE_WIDTH = 1280;
+  const DUEL_STAGE_HEIGHT = 720;
+  const duelStageScale = Math.max(
+    0.2,
+    Math.min(arenaOuterSize.width / DUEL_STAGE_WIDTH, arenaOuterSize.height / DUEL_STAGE_HEIGHT)
+  );
 
   // Refs for 3D Combatant Hitboxes & Interactive FX Canvas
   const arenaRef = useRef<HTMLDivElement | null>(null);
+  const fixedDuelStageRef = useRef<HTMLDivElement | null>(null);
   const fxCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const playerBoxRef = useRef<HTMLDivElement | null>(null);
   const npcBoxRef = useRef<HTMLDivElement | null>(null);
@@ -1007,6 +1020,53 @@ export function DuelArena3DOverlay({
   const burstsRef = useRef<BurstParticle[]>([]);
   const lastSlashHitMsRef = useRef<Record<'player' | 'npc', number>>({ player: 0, npc: 0 });
   const lastProcessedEffectIdRef = useRef<string>('');
+
+  useEffect(() => {
+    const el = arenaRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width, height } = entry.contentRect;
+        if (width > 0 && height > 0) {
+          setArenaOuterSize({ width, height });
+        }
+      }
+    });
+    obs.observe(el);
+
+    // Block accidental Ctrl+Wheel browser zoom inside the 3D Duel Arena so positioning stays 100% locked
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    };
+    el.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      obs.disconnect();
+      el.removeEventListener('wheel', handleWheel);
+    };
+  }, [visibilityPhase]);
+
+  function getDuelStageCoords(clientX: number, clientY: number): {
+    x: number;
+    y: number;
+    nx: number;
+    ny: number;
+  } {
+    const rect = fixedDuelStageRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) {
+      return { x: DUEL_STAGE_WIDTH / 2, y: DUEL_STAGE_HEIGHT / 2, nx: 0.5, ny: 0.5 };
+    }
+    const nx = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const ny = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+    return {
+      x: nx * DUEL_STAGE_WIDTH,
+      y: ny * DUEL_STAGE_HEIGHT,
+      nx,
+      ny,
+    };
+  }
 
   useEffect(() => {
     if (renderedDuel?.activeTurn) {
@@ -1063,25 +1123,26 @@ export function DuelArena3DOverlay({
       campaignId,
     });
 
-    const canvas = fxCanvasRef.current;
     const targetEl = eff.targetSide === 'player' ? playerBoxRef.current : npcBoxRef.current;
-    if (!canvas) return;
-    const cRect = canvas.getBoundingClientRect();
+    const stageEl = fixedDuelStageRef.current;
 
-    let cx = eff.targetSide === 'player' ? cRect.width * 0.28 : cRect.width * 0.72;
-    let cy = cRect.height * 0.5;
-    if (targetEl) {
+    let cx = eff.targetSide === 'player' ? DUEL_STAGE_WIDTH * 0.24 : DUEL_STAGE_WIDTH * 0.76;
+    let cy = DUEL_STAGE_HEIGHT * 0.54;
+    if (targetEl && stageEl) {
+      const sRect = stageEl.getBoundingClientRect();
       const tRect = targetEl.getBoundingClientRect();
-      cx = tRect.left - cRect.left + tRect.width / 2;
-      cy = tRect.top - cRect.top + tRect.height / 2;
+      if (sRect.width > 0 && sRect.height > 0) {
+        cx = ((tRect.left - sRect.left + tRect.width / 2) / sRect.width) * DUEL_STAGE_WIDTH;
+        cy = ((tRect.top - sRect.top + tRect.height / 2) / sRect.height) * DUEL_STAGE_HEIGHT;
+      }
     }
 
     if (eff.slashPoints && eff.slashPoints.length >= 2) {
       const now = performance.now();
       for (const pt of eff.slashPoints) {
         slashTrailRef.current.push({
-          x: pt.x * cRect.width,
-          y: pt.y * cRect.height,
+          x: pt.x * DUEL_STAGE_WIDTH,
+          y: pt.y * DUEL_STAGE_HEIGHT,
           createdAt: now,
         });
       }
@@ -1185,9 +1246,8 @@ export function DuelArena3DOverlay({
     }));
 
     const renderFrame = (now: number) => {
-      const rect = canvas.getBoundingClientRect();
-      const w = Math.max(1, Math.round(rect.width));
-      const h = Math.max(1, Math.round(rect.height));
+      const w = DUEL_STAGE_WIDTH;
+      const h = DUEL_STAGE_HEIGHT;
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
@@ -1436,10 +1496,7 @@ export function DuelArena3DOverlay({
       return;
     }
 
-    const arenaRect = arenaRef.current?.getBoundingClientRect();
-    if (!arenaRect) return;
-    const x = e.clientX - arenaRect.left;
-    const y = e.clientY - arenaRect.top;
+    const { x, y } = getDuelStageCoords(e.clientX, e.clientY);
 
     isPointerDownRef.current = true;
 
@@ -1467,11 +1524,7 @@ export function DuelArena3DOverlay({
   }
 
   function handleArenaPointerMove(e: React.PointerEvent) {
-    const arenaRect = arenaRef.current?.getBoundingClientRect();
-    if (!arenaRect || arenaRect.width === 0 || arenaRect.height === 0) return;
-
-    const nx = (e.clientX - arenaRect.left) / arenaRect.width;
-    const ny = (e.clientY - arenaRect.top) / arenaRect.height;
+    const { x, y, nx, ny } = getDuelStageCoords(e.clientX, e.clientY);
 
     setMouseTilt({
       rx: Number(((0.5 - ny) * 4.5).toFixed(2)),
@@ -1480,8 +1533,6 @@ export function DuelArena3DOverlay({
 
     if (mode !== 'gm' || !isPointerDownRef.current || cursorMode !== 'blade') return;
 
-    const x = e.clientX - arenaRect.left;
-    const y = e.clientY - arenaRect.top;
     const now = performance.now();
     slashTrailRef.current.push({ x, y, createdAt: now });
 
@@ -1489,8 +1540,8 @@ export function DuelArena3DOverlay({
     if (hitSide && Date.now() - lastSlashHitMsRef.current[hitSide] > 340) {
       lastSlashHitMsRef.current[hitSide] = Date.now();
       const recentNormalized = slashTrailRef.current.slice(-10).map((pt) => ({
-        x: Number((pt.x / arenaRect.width).toFixed(3)),
-        y: Number((pt.y / arenaRect.height).toFixed(3)),
+        x: Number((pt.x / DUEL_STAGE_WIDTH).toFixed(3)),
+        y: Number((pt.y / DUEL_STAGE_HEIGHT).toFixed(3)),
       }));
       triggerMouseReactiveStrike(hitSide, 'blade', recentNormalized);
     }
@@ -1851,524 +1902,538 @@ export function DuelArena3DOverlay({
           : 'opacity-100 scale-100'
       }`}
     >
-      {/* LAYER 1 (z-10): 3D Environment Layer (Skybox Cyclorama + Tilted 3D Arena Floor Plane) */}
-      {/* Keeping the 3D floor in its own layer guarantees characters NEVER clip or sink beneath the floor! */}
-      <div
-        className="absolute inset-0 pointer-events-none z-10 overflow-hidden"
-        style={{
-          perspective: '1050px',
-          perspectiveOrigin: isPlayerTurn ? '46% 48%' : '54% 48%',
-          transition: 'perspective-origin 820ms cubic-bezier(0.22, 1, 0.36, 1)',
-        }}
-      >
+      {/* PRE-ESTABLISHED FIXED 1280x720 3D DUEL STAGE (Immune to Browser Ctrl+Zoom!) */}
+      <div className="absolute inset-0 flex items-center justify-center overflow-hidden pointer-events-none">
         <div
-          className="relative w-full h-full"
+          ref={fixedDuelStageRef}
           style={{
-            transform: `translate3d(${camTranslateX * 0.7}px, 0px, 0px) rotateX(${camRotateX}deg) rotateY(${camRotateY}deg) rotateZ(${camRotateZ}deg) scale(${camScale})`,
-            transition: 'transform 820ms cubic-bezier(0.22, 1, 0.36, 1)',
+            width: `${DUEL_STAGE_WIDTH}px`,
+            height: `${DUEL_STAGE_HEIGHT}px`,
+            transform: `scale(${duelStageScale})`,
+            transformOrigin: 'center center',
           }}
+          className="relative overflow-hidden shrink-0 pointer-events-auto"
         >
-          {/* Skybox / Custom Scene Duel Background */}
+          {/* LAYER 1 (z-10): 3D Environment Layer (Skybox Cyclorama + Tilted 3D Arena Floor Plane) */}
+          {/* Keeping the 3D floor in its own layer guarantees characters NEVER clip or sink beneath the floor! */}
           <div
-            className="absolute inset-[-16%] overflow-hidden"
+            className="absolute inset-0 pointer-events-none z-10 overflow-hidden"
             style={{
-              background: preset.skyGradient,
+              perspective: '1050px',
+              perspectiveOrigin: isPlayerTurn ? '46% 48%' : '54% 48%',
+              transition: 'perspective-origin 820ms cubic-bezier(0.22, 1, 0.36, 1)',
             }}
           >
-            {bgResolvedUrl && (
-              <div className="w-full h-full relative opacity-60">
-                {resolvedMediaKind === 'video' ? (
-                  <video
-                    src={bgResolvedUrl}
-                    autoPlay
-                    loop
-                    muted
-                    playsInline
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <img
-                    src={bgResolvedUrl}
-                    alt="Cenário 3D de Duelo"
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover"
-                  />
+            <div
+              className="relative w-full h-full"
+              style={{
+                transform: `translate3d(${camTranslateX * 0.7}px, 0px, 0px) rotateX(${camRotateX}deg) rotateY(${camRotateY}deg) rotateZ(${camRotateZ}deg) scale(${camScale})`,
+                transition: 'transform 820ms cubic-bezier(0.22, 1, 0.36, 1)',
+              }}
+            >
+              {/* Skybox / Custom Scene Duel Background */}
+              <div
+                className="absolute inset-[-16%] overflow-hidden"
+                style={{
+                  background: preset.skyGradient,
+                }}
+              >
+                {bgResolvedUrl && (
+                  <div className="w-full h-full relative opacity-60">
+                    {resolvedMediaKind === 'video' ? (
+                      <video
+                        src={bgResolvedUrl}
+                        autoPlay
+                        loop
+                        muted
+                        playsInline
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <img
+                        src={bgResolvedUrl}
+                        alt="Cenário 3D de Duelo"
+                        referrerPolicy="no-referrer"
+                        className="w-full h-full object-cover"
+                      />
+                    )}
+                    <div
+                      className="absolute inset-0"
+                      style={{
+                        background:
+                          'linear-gradient(to bottom, rgba(7,6,6,0.28) 0%, rgba(7,6,6,0.18) 50%, rgba(7,6,6,0.95) 100%)',
+                      }}
+                    />
+                  </div>
                 )}
+              </div>
+
+              {/* 3D Ground Surface Plane (Anchored at the fixed horizon line `top: 52%` and fixed pixel dimensions 2400x680) */}
+              <div
+                className="absolute left-1/2 top-[52%] w-[2400px] h-[680px] -translate-x-1/2"
+                style={{
+                  transformOrigin: '50% 0%',
+                  transform: 'perspective(900px) rotateX(66deg)',
+                  background: preset.floorGradient,
+                  boxShadow: `0 0 140px 20px ${preset.ambientGlow} inset, 0 -2px 24px ${preset.ambientGlow}`,
+                  borderTop: `1px solid ${preset.floorGridColor}`,
+                }}
+              >
                 <div
-                  className="absolute inset-0"
+                  className="w-full h-full opacity-80"
                   style={{
-                    background:
-                      'linear-gradient(to bottom, rgba(7,6,6,0.28) 0%, rgba(7,6,6,0.18) 50%, rgba(7,6,6,0.95) 100%)',
+                    backgroundImage: `
+                      radial-gradient(circle at 50% 34%, transparent 16%, ${preset.floorGridColor} 16.5%, transparent 17.5%),
+                      radial-gradient(circle at 50% 34%, transparent 32%, ${preset.floorGridColor} 32.5%, transparent 33.5%),
+                      linear-gradient(to right, ${preset.floorGridColor} 1px, transparent 1px),
+                      linear-gradient(to bottom, ${preset.floorGridColor} 1px, transparent 1px)
+                    `,
+                    backgroundSize: '100% 100%, 100% 100%, 74px 74px, 74px 74px',
                   }}
                 />
               </div>
-            )}
+
+              {/* Volumetric Rim Spotlight Beams shifting dynamically with active turn */}
+              <div
+                className="absolute inset-0 pointer-events-none transition-all duration-700"
+                style={{
+                  background: `radial-gradient(circle at ${
+                    isPlayerTurn ? '26% 58%' : '74% 58%'
+                  }, ${preset.ambientGlow} 0%, transparent 56%)`,
+                }}
+              />
+            </div>
           </div>
 
-          {/* 3D Ground Surface Plane (Anchored at the horizon line `top: 52%` and tilted down toward the viewer) */}
+          {/* LAYER 2 (z-15): 3D Combatant Standees Layer (Grounded on the EXACT SAME floor surface elevation!) */}
           <div
-            className="absolute left-1/2 top-[52%] w-[200vw] h-[95vh] -translate-x-1/2"
+            className="absolute inset-0 flex items-center justify-center pointer-events-none z-15"
             style={{
-              transformOrigin: '50% 0%',
-              transform: 'perspective(900px) rotateX(66deg)',
-              background: preset.floorGradient,
-              boxShadow: `0 0 140px 20px ${preset.ambientGlow} inset, 0 -2px 24px ${preset.ambientGlow}`,
-              borderTop: `1px solid ${preset.floorGridColor}`,
+              perspective: '1050px',
+              perspectiveOrigin: isPlayerTurn ? '46% 52%' : '54% 52%',
+              transition: 'perspective-origin 820ms cubic-bezier(0.22, 1, 0.36, 1)',
             }}
           >
             <div
-              className="w-full h-full opacity-80"
+              className="relative w-full h-full max-w-[1152px] mx-auto px-6"
               style={{
-                backgroundImage: `
-                  radial-gradient(circle at 50% 34%, transparent 16%, ${preset.floorGridColor} 16.5%, transparent 17.5%),
-                  radial-gradient(circle at 50% 34%, transparent 32%, ${preset.floorGridColor} 32.5%, transparent 33.5%),
-                  linear-gradient(to right, ${preset.floorGridColor} 1px, transparent 1px),
-                  linear-gradient(to bottom, ${preset.floorGridColor} 1px, transparent 1px)
-                `,
-                backgroundSize: '100% 100%, 100% 100%, 74px 74px, 74px 74px',
+                transformStyle: 'preserve-3d',
+                transform: `translate3d(${camTranslateX}px, 0px, 0px) rotateX(${camRotateX * 0.45}deg) rotateY(${camRotateY}deg) rotateZ(${camRotateZ}deg) scale(${camScale})`,
+                transition: 'transform 820ms cubic-bezier(0.22, 1, 0.36, 1)',
               }}
-            />
+            >
+              {/* PLAYER COMBATANT (Left Surface Position — Same Ground Elevation `bottom-[175px]`) */}
+              <div
+                ref={playerBoxRef}
+                className="absolute left-[135px] bottom-[175px] w-64 flex flex-col items-center pointer-events-auto"
+                style={{
+                  transformOrigin: '50% 100%',
+                  transform: `translate3d(${
+                    playerLungeActive ? '85px' : playerHitActive ? '-32px' : '0px'
+                  }, ${playerLungeActive ? '-16px' : '0px'}, 0px) rotateY(${playerRotY}deg) scale(${playerScale})`,
+                  transition: 'transform 520ms cubic-bezier(0.22, 1, 0.36, 1)',
+                }}
+              >
+                {/* Optional Nameplate Above Character (Always shown to GM; toggleable for Players/TV) */}
+                {shouldShowNamesAboveTokens && (
+                  <div
+                    className="mb-2.5 px-3 py-1 text-xs font-bold font-typewriter tracking-wide border bg-stone-950/90 shadow-lg flex items-center gap-1.5 max-w-full"
+                    style={{
+                      borderColor: isPlayerTurn ? preset.accentColor : 'rgba(120,113,108,0.6)',
+                      color: isPlayerTurn ? preset.accentColor : '#f5f5f4',
+                    }}
+                  >
+                    {isPlayerTurn && <span className="text-[10px]">◆</span>}
+                    <span className="truncate">{renderedDuel.player.name}</span>
+                  </div>
+                )}
+
+                {/* 3D Character Standee Card */}
+                <div
+                  className={`relative w-52 h-52 rounded-2xl border-2 overflow-hidden bg-stone-900 flex items-center justify-center transition-all duration-200 ${
+                    playerHitActive ? 'ring-4 ring-red-500 brightness-125 -rotate-3' : ''
+                  }`}
+                  style={{
+                    borderColor: isPlayerTurn ? preset.accentColor : renderedDuel.player.color,
+                    boxShadow: playerHitActive
+                      ? '0 0 44px 12px rgba(239, 68, 68, 0.9), 0 22px 40px rgba(0,0,0,0.9)'
+                      : `0 22px 44px rgba(0,0,0,0.9), 0 0 28px ${preset.ambientGlow}`,
+                  }}
+                >
+                  {playerImgUrl ? (
+                    <img
+                      src={playerImgUrl}
+                      alt={renderedDuel.player.name}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-4xl font-bold font-typewriter text-stone-200">
+                      {renderedDuel.player.name.slice(0, 2).toUpperCase()}
+                    </span>
+                  )}
+
+                  {playerHitActive && (
+                    <div className="absolute inset-0 bg-red-600/40 pointer-events-none" />
+                  )}
+                </div>
+
+                {/* 3D Grounded Pedestal Disc resting flush on the floor surface */}
+                <div
+                  className="w-56 h-7 -mt-3 rounded-full border"
+                  style={{
+                    borderColor: preset.accentColor,
+                    background: `radial-gradient(ellipse at center, ${preset.ambientGlow} 0%, rgba(0,0,0,0.92) 75%)`,
+                    transform: 'rotateX(65deg)',
+                    boxShadow: '0 14px 28px rgba(0,0,0,0.95)',
+                  }}
+                />
+
+                {/* GM-ONLY Manual Vida (PV) Control Box — Positioned below the pedestal so both pedestals stay on the exact same floor height! */}
+                {mode === 'gm' && (
+                  <div
+                    data-gm-ui="true"
+                    className="absolute top-full mt-1.5 w-full bg-stone-950/95 border border-stone-700/90 p-2 shadow-2xl space-y-1.5 z-30"
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-[11px] font-bold font-typewriter truncate">
+                        {renderedDuel.player.name}
+                      </span>
+                      <div className="flex items-center gap-1 text-xs font-bold tabular-nums text-emerald-400">
+                        <input
+                          type="number"
+                          value={renderedDuel.player.hpCurrent}
+                          onChange={(e) =>
+                            setCombatantHpManual('player', Number(e.target.value))
+                          }
+                          className="w-11 px-1 py-0.5 text-right bg-stone-900 border border-stone-700 text-emerald-300"
+                          title="Editar vida atual diretamente"
+                        />
+                        <span>/</span>
+                        <input
+                          type="number"
+                          value={renderedDuel.player.hpMax}
+                          onChange={(e) =>
+                            setCombatantHpManual(
+                              'player',
+                              renderedDuel.player.hpCurrent,
+                              Number(e.target.value)
+                            )
+                          }
+                          className="w-11 px-1 py-0.5 bg-stone-900 border border-stone-700 text-stone-300"
+                          title="Editar vida máxima"
+                        />
+                        <span className="text-[10px] text-stone-400">PV</span>
+                      </div>
+                    </div>
+
+                    <div className="w-full h-1.5 bg-stone-800 overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-500 transition-all duration-200"
+                        style={{
+                          width: `${Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              (renderedDuel.player.hpCurrent /
+                                Math.max(1, renderedDuel.player.hpMax)) *
+                                100
+                            )
+                          )}%`,
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('player', -10)}
+                          className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
+                        >
+                          -10
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('player', -5)}
+                          className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
+                        >
+                          -5
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('player', -1)}
+                          className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
+                        >
+                          -1
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('player', 1)}
+                          className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
+                        >
+                          +1
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('player', 5)}
+                          className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
+                        >
+                          +5
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-0.5">
+                        <input
+                          type="number"
+                          min={1}
+                          value={manualPlayerDelta}
+                          onChange={(e) => setManualPlayerDelta(e.target.value)}
+                          className="w-9 px-1 py-0.5 bg-stone-900 border border-stone-700 text-center text-stone-200 tabular-nums"
+                          title="Valor personalizado de vida"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            adjustCombatantHpSilent(
+                              'player',
+                              -Math.max(1, Number(manualPlayerDelta) || 1)
+                            )
+                          }
+                          className="px-1.5 py-0.5 bg-red-800 hover:bg-red-700 text-white font-bold"
+                          title="Tirar esse valor da vida"
+                        >
+                          -
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            adjustCombatantHpSilent(
+                              'player',
+                              Math.max(1, Number(manualPlayerDelta) || 1)
+                            )
+                          }
+                          className="px-1.5 py-0.5 bg-emerald-800 hover:bg-emerald-700 text-white font-bold"
+                          title="Somar esse valor na vida"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* NPC / ENEMY COMBATANT (Right Surface Position — Exact Same Ground Elevation `bottom-[175px]`!) */}
+              <div
+                ref={npcBoxRef}
+                className="absolute right-[135px] bottom-[175px] w-64 flex flex-col items-center pointer-events-auto"
+                style={{
+                  transformOrigin: '50% 100%',
+                  transform: `translate3d(${
+                    npcLungeActive ? '-85px' : npcHitActive ? '32px' : '0px'
+                  }, ${npcLungeActive ? '-16px' : '0px'}, 0px) rotateY(${npcRotY}deg) scale(${npcScale})`,
+                  transition: 'transform 520ms cubic-bezier(0.22, 1, 0.36, 1)',
+                }}
+              >
+                {/* Optional Nameplate Above Character (Always shown to GM; toggleable for Players/TV) */}
+                {shouldShowNamesAboveTokens && (
+                  <div
+                    className="mb-2.5 px-3 py-1 text-xs font-bold font-typewriter tracking-wide border bg-stone-950/90 shadow-lg flex items-center gap-1.5 max-w-full"
+                    style={{
+                      borderColor: !isPlayerTurn ? '#ef4444' : 'rgba(120,113,108,0.6)',
+                      color: !isPlayerTurn ? '#f87171' : '#f5f5f4',
+                    }}
+                  >
+                    {!isPlayerTurn && <span className="text-[10px]">◆</span>}
+                    <span className="truncate">{renderedDuel.npc.name}</span>
+                  </div>
+                )}
+
+                {/* 3D Enemy Standee Card */}
+                <div
+                  className={`relative w-52 h-52 rounded-2xl border-2 overflow-hidden bg-stone-900 flex items-center justify-center transition-all duration-200 ${
+                    npcHitActive ? 'ring-4 ring-red-500 brightness-125 rotate-3' : ''
+                  }`}
+                  style={{
+                    borderColor: !isPlayerTurn ? '#ef4444' : renderedDuel.npc.color,
+                    boxShadow: npcHitActive
+                      ? '0 0 44px 12px rgba(239, 68, 68, 0.9), 0 22px 40px rgba(0,0,0,0.9)'
+                      : '0 22px 44px rgba(0,0,0,0.9), 0 0 28px rgba(220, 38, 38, 0.28)',
+                  }}
+                >
+                  {npcImgUrl ? (
+                    <img
+                      src={npcImgUrl}
+                      alt={renderedDuel.npc.name}
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="text-4xl font-bold font-typewriter text-stone-200">
+                      {renderedDuel.npc.name.slice(0, 2).toUpperCase()}
+                    </span>
+                  )}
+
+                  {npcHitActive && (
+                    <div className="absolute inset-0 bg-red-600/40 pointer-events-none" />
+                  )}
+                </div>
+
+                {/* 3D Grounded Pedestal Disc resting flush on the exact same floor surface */}
+                <div
+                  className="w-56 h-7 -mt-3 rounded-full border border-red-500/60"
+                  style={{
+                    background:
+                      'radial-gradient(ellipse at center, rgba(220,38,38,0.32) 0%, rgba(0,0,0,0.92) 75%)',
+                    transform: 'rotateX(65deg)',
+                    boxShadow: '0 14px 28px rgba(0,0,0,0.95)',
+                  }}
+                />
+
+                {/* GM-ONLY Manual Vida (PV) Control Box */}
+                {mode === 'gm' && (
+                  <div
+                    data-gm-ui="true"
+                    className="absolute top-full mt-1.5 w-full bg-stone-950/95 border border-stone-700/90 p-2 shadow-2xl space-y-1.5 z-30"
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-[11px] font-bold font-typewriter truncate">
+                        {renderedDuel.npc.name}
+                      </span>
+                      <div className="flex items-center gap-1 text-xs font-bold tabular-nums text-red-400">
+                        <input
+                          type="number"
+                          value={renderedDuel.npc.hpCurrent}
+                          onChange={(e) =>
+                            setCombatantHpManual('npc', Number(e.target.value))
+                          }
+                          className="w-11 px-1 py-0.5 text-right bg-stone-900 border border-stone-700 text-red-300"
+                          title="Editar vida atual do oponente diretamente"
+                        />
+                        <span>/</span>
+                        <input
+                          type="number"
+                          value={renderedDuel.npc.hpMax}
+                          onChange={(e) =>
+                            setCombatantHpManual(
+                              'npc',
+                              renderedDuel.npc.hpCurrent,
+                              Number(e.target.value)
+                            )
+                          }
+                          className="w-11 px-1 py-0.5 bg-stone-900 border border-stone-700 text-stone-300"
+                          title="Editar vida máxima do oponente"
+                        />
+                        <span className="text-[10px] text-stone-400">PV</span>
+                      </div>
+                    </div>
+
+                    <div className="w-full h-1.5 bg-stone-800 overflow-hidden">
+                      <div
+                        className="h-full bg-red-600 transition-all duration-200"
+                        style={{
+                          width: `${Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              (renderedDuel.npc.hpCurrent / Math.max(1, renderedDuel.npc.hpMax)) *
+                                100
+                            )
+                          )}%`,
+                        }}
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('npc', -10)}
+                          className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
+                        >
+                          -10
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('npc', -5)}
+                          className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
+                        >
+                          -5
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('npc', -1)}
+                          className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
+                        >
+                          -1
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('npc', 1)}
+                          className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
+                        >
+                          +1
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adjustCombatantHpSilent('npc', 5)}
+                          className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
+                        >
+                          +5
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-0.5">
+                        <input
+                          type="number"
+                          min={1}
+                          value={manualNpcDelta}
+                          onChange={(e) => setManualNpcDelta(e.target.value)}
+                          className="w-9 px-1 py-0.5 bg-stone-900 border border-stone-700 text-center text-stone-200 tabular-nums"
+                          title="Valor personalizado de vida"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            adjustCombatantHpSilent(
+                              'npc',
+                              -Math.max(1, Number(manualNpcDelta) || 1)
+                            )
+                          }
+                          className="px-1.5 py-0.5 bg-red-800 hover:bg-red-700 text-white font-bold"
+                          title="Tirar esse valor da vida"
+                        >
+                          -
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            adjustCombatantHpSilent(
+                              'npc',
+                              Math.max(1, Number(manualNpcDelta) || 1)
+                            )
+                          }
+                          className="px-1.5 py-0.5 bg-emerald-800 hover:bg-emerald-700 text-white font-bold"
+                          title="Somar esse valor na vida"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
-          {/* Volumetric Rim Spotlight Beams shifting dynamically with active turn */}
-          <div
-            className="absolute inset-0 pointer-events-none transition-all duration-700"
-            style={{
-              background: `radial-gradient(circle at ${
-                isPlayerTurn ? '26% 58%' : '74% 58%'
-              }, ${preset.ambientGlow} 0%, transparent 56%)`,
-            }}
+          {/* LAYER 3 (z-20): Interactive 2D FX Canvas Overlay (Particles + Corte Slash + Impacto/Tiro/Magia Shockwaves) */}
+          <canvas
+            ref={fxCanvasRef}
+            className="absolute inset-0 w-full h-full pointer-events-none z-20"
           />
         </div>
       </div>
-
-      {/* LAYER 2 (z-15): 3D Combatant Standees Layer (Grounded on the EXACT SAME floor surface elevation!) */}
-      <div
-        className="absolute inset-0 flex items-center justify-center pointer-events-none z-15"
-        style={{
-          perspective: '1050px',
-          perspectiveOrigin: isPlayerTurn ? '46% 52%' : '54% 52%',
-          transition: 'perspective-origin 820ms cubic-bezier(0.22, 1, 0.36, 1)',
-        }}
-      >
-        <div
-          className="relative w-full h-full max-w-6xl mx-auto px-6"
-          style={{
-            transformStyle: 'preserve-3d',
-            transform: `translate3d(${camTranslateX}px, 0px, 0px) rotateX(${camRotateX * 0.45}deg) rotateY(${camRotateY}deg) rotateZ(${camRotateZ}deg) scale(${camScale})`,
-            transition: 'transform 820ms cubic-bezier(0.22, 1, 0.36, 1)',
-          }}
-        >
-          {/* PLAYER COMBATANT (Left Surface Position — Same Ground Elevation `bottom-[23%] sm:bottom-[25%]`) */}
-          <div
-            ref={playerBoxRef}
-            className="absolute left-[7%] sm:left-[12%] bottom-[23%] sm:bottom-[25%] w-48 sm:w-64 flex flex-col items-center pointer-events-auto"
-            style={{
-              transformOrigin: '50% 100%',
-              transform: `translate3d(${
-                playerLungeActive ? '85px' : playerHitActive ? '-32px' : '0px'
-              }, ${playerLungeActive ? '-16px' : '0px'}, 0px) rotateY(${playerRotY}deg) scale(${playerScale})`,
-              transition: 'transform 520ms cubic-bezier(0.22, 1, 0.36, 1)',
-            }}
-          >
-            {/* Optional Nameplate Above Character (Always shown to GM; toggleable for Players/TV) */}
-            {shouldShowNamesAboveTokens && (
-              <div
-                className="mb-2.5 px-3 py-1 text-xs font-bold font-typewriter tracking-wide border bg-stone-950/90 shadow-lg flex items-center gap-1.5 max-w-full"
-                style={{
-                  borderColor: isPlayerTurn ? preset.accentColor : 'rgba(120,113,108,0.6)',
-                  color: isPlayerTurn ? preset.accentColor : '#f5f5f4',
-                }}
-              >
-                {isPlayerTurn && <span className="text-[10px]">◆</span>}
-                <span className="truncate">{renderedDuel.player.name}</span>
-              </div>
-            )}
-
-            {/* 3D Character Standee Card */}
-            <div
-              className={`relative w-40 h-40 sm:w-52 sm:h-52 rounded-2xl border-2 overflow-hidden bg-stone-900 flex items-center justify-center transition-all duration-200 ${
-                playerHitActive ? 'ring-4 ring-red-500 brightness-125 -rotate-3' : ''
-              }`}
-              style={{
-                borderColor: isPlayerTurn ? preset.accentColor : renderedDuel.player.color,
-                boxShadow: playerHitActive
-                  ? '0 0 44px 12px rgba(239, 68, 68, 0.9), 0 22px 40px rgba(0,0,0,0.9)'
-                  : `0 22px 44px rgba(0,0,0,0.9), 0 0 28px ${preset.ambientGlow}`,
-              }}
-            >
-              {playerImgUrl ? (
-                <img
-                  src={playerImgUrl}
-                  alt={renderedDuel.player.name}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <span className="text-4xl font-bold font-typewriter text-stone-200">
-                  {renderedDuel.player.name.slice(0, 2).toUpperCase()}
-                </span>
-              )}
-
-              {playerHitActive && (
-                <div className="absolute inset-0 bg-red-600/40 pointer-events-none" />
-              )}
-            </div>
-
-            {/* 3D Grounded Pedestal Disc resting flush on the floor surface */}
-            <div
-              className="w-44 sm:w-56 h-7 -mt-3 rounded-full border"
-              style={{
-                borderColor: preset.accentColor,
-                background: `radial-gradient(ellipse at center, ${preset.ambientGlow} 0%, rgba(0,0,0,0.92) 75%)`,
-                transform: 'rotateX(65deg)',
-                boxShadow: '0 14px 28px rgba(0,0,0,0.95)',
-              }}
-            />
-
-            {/* GM-ONLY Manual Vida (PV) Control Box — Positioned below the pedestal so both pedestals stay on the exact same floor height! */}
-            {mode === 'gm' && (
-              <div
-                data-gm-ui="true"
-                className="absolute top-full mt-1.5 w-full bg-stone-950/95 border border-stone-700/90 p-2 shadow-2xl space-y-1.5 z-30"
-              >
-                <div className="flex items-center justify-between gap-1.5">
-                  <span className="text-[11px] font-bold font-typewriter truncate">
-                    {renderedDuel.player.name}
-                  </span>
-                  <div className="flex items-center gap-1 text-xs font-bold tabular-nums text-emerald-400">
-                    <input
-                      type="number"
-                      value={renderedDuel.player.hpCurrent}
-                      onChange={(e) =>
-                        setCombatantHpManual('player', Number(e.target.value))
-                      }
-                      className="w-11 px-1 py-0.5 text-right bg-stone-900 border border-stone-700 text-emerald-300"
-                      title="Editar vida atual diretamente"
-                    />
-                    <span>/</span>
-                    <input
-                      type="number"
-                      value={renderedDuel.player.hpMax}
-                      onChange={(e) =>
-                        setCombatantHpManual(
-                          'player',
-                          renderedDuel.player.hpCurrent,
-                          Number(e.target.value)
-                        )
-                      }
-                      className="w-11 px-1 py-0.5 bg-stone-900 border border-stone-700 text-stone-300"
-                      title="Editar vida máxima"
-                    />
-                    <span className="text-[10px] text-stone-400">PV</span>
-                  </div>
-                </div>
-
-                <div className="w-full h-1.5 bg-stone-800 overflow-hidden">
-                  <div
-                    className="h-full bg-emerald-500 transition-all duration-200"
-                    style={{
-                      width: `${Math.max(
-                        0,
-                        Math.min(
-                          100,
-                          (renderedDuel.player.hpCurrent /
-                            Math.max(1, renderedDuel.player.hpMax)) *
-                            100
-                        )
-                      )}%`,
-                    }}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-1 text-[10px]">
-                  <div className="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('player', -10)}
-                      className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
-                    >
-                      -10
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('player', -5)}
-                      className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
-                    >
-                      -5
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('player', -1)}
-                      className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
-                    >
-                      -1
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('player', 1)}
-                      className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
-                    >
-                      +1
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('player', 5)}
-                      className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
-                    >
-                      +5
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-0.5">
-                    <input
-                      type="number"
-                      min={1}
-                      value={manualPlayerDelta}
-                      onChange={(e) => setManualPlayerDelta(e.target.value)}
-                      className="w-9 px-1 py-0.5 bg-stone-900 border border-stone-700 text-center text-stone-200 tabular-nums"
-                      title="Valor personalizado de vida"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        adjustCombatantHpSilent(
-                          'player',
-                          -Math.max(1, Number(manualPlayerDelta) || 1)
-                        )
-                      }
-                      className="px-1.5 py-0.5 bg-red-800 hover:bg-red-700 text-white font-bold"
-                      title="Tirar esse valor da vida"
-                    >
-                      -
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        adjustCombatantHpSilent(
-                          'player',
-                          Math.max(1, Number(manualPlayerDelta) || 1)
-                        )
-                      }
-                      className="px-1.5 py-0.5 bg-emerald-800 hover:bg-emerald-700 text-white font-bold"
-                      title="Somar esse valor na vida"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* NPC / ENEMY COMBATANT (Right Surface Position — Exact Same Ground Elevation `bottom-[23%] sm:bottom-[25%]`!) */}
-          <div
-            ref={npcBoxRef}
-            className="absolute right-[7%] sm:right-[12%] bottom-[23%] sm:bottom-[25%] w-48 sm:w-64 flex flex-col items-center pointer-events-auto"
-            style={{
-              transformOrigin: '50% 100%',
-              transform: `translate3d(${
-                npcLungeActive ? '-85px' : npcHitActive ? '32px' : '0px'
-              }, ${npcLungeActive ? '-16px' : '0px'}, 0px) rotateY(${npcRotY}deg) scale(${npcScale})`,
-              transition: 'transform 520ms cubic-bezier(0.22, 1, 0.36, 1)',
-            }}
-          >
-            {/* Optional Nameplate Above Character (Always shown to GM; toggleable for Players/TV) */}
-            {shouldShowNamesAboveTokens && (
-              <div
-                className="mb-2.5 px-3 py-1 text-xs font-bold font-typewriter tracking-wide border bg-stone-950/90 shadow-lg flex items-center gap-1.5 max-w-full"
-                style={{
-                  borderColor: !isPlayerTurn ? '#ef4444' : 'rgba(120,113,108,0.6)',
-                  color: !isPlayerTurn ? '#f87171' : '#f5f5f4',
-                }}
-              >
-                {!isPlayerTurn && <span className="text-[10px]">◆</span>}
-                <span className="truncate">{renderedDuel.npc.name}</span>
-              </div>
-            )}
-
-            {/* 3D Enemy Standee Card */}
-            <div
-              className={`relative w-40 h-40 sm:w-52 sm:h-52 rounded-2xl border-2 overflow-hidden bg-stone-900 flex items-center justify-center transition-all duration-200 ${
-                npcHitActive ? 'ring-4 ring-red-500 brightness-125 rotate-3' : ''
-              }`}
-              style={{
-                borderColor: !isPlayerTurn ? '#ef4444' : renderedDuel.npc.color,
-                boxShadow: npcHitActive
-                  ? '0 0 44px 12px rgba(239, 68, 68, 0.9), 0 22px 40px rgba(0,0,0,0.9)'
-                  : '0 22px 44px rgba(0,0,0,0.9), 0 0 28px rgba(220, 38, 38, 0.28)',
-              }}
-            >
-              {npcImgUrl ? (
-                <img
-                  src={npcImgUrl}
-                  alt={renderedDuel.npc.name}
-                  referrerPolicy="no-referrer"
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <span className="text-4xl font-bold font-typewriter text-stone-200">
-                  {renderedDuel.npc.name.slice(0, 2).toUpperCase()}
-                </span>
-              )}
-
-              {npcHitActive && (
-                <div className="absolute inset-0 bg-red-600/40 pointer-events-none" />
-              )}
-            </div>
-
-            {/* 3D Grounded Pedestal Disc resting flush on the exact same floor surface */}
-            <div
-              className="w-44 sm:w-56 h-7 -mt-3 rounded-full border border-red-500/60"
-              style={{
-                background:
-                  'radial-gradient(ellipse at center, rgba(220,38,38,0.32) 0%, rgba(0,0,0,0.92) 75%)',
-                transform: 'rotateX(65deg)',
-                boxShadow: '0 14px 28px rgba(0,0,0,0.95)',
-              }}
-            />
-
-            {/* GM-ONLY Manual Vida (PV) Control Box */}
-            {mode === 'gm' && (
-              <div
-                data-gm-ui="true"
-                className="absolute top-full mt-1.5 w-full bg-stone-950/95 border border-stone-700/90 p-2 shadow-2xl space-y-1.5 z-30"
-              >
-                <div className="flex items-center justify-between gap-1.5">
-                  <span className="text-[11px] font-bold font-typewriter truncate">
-                    {renderedDuel.npc.name}
-                  </span>
-                  <div className="flex items-center gap-1 text-xs font-bold tabular-nums text-red-400">
-                    <input
-                      type="number"
-                      value={renderedDuel.npc.hpCurrent}
-                      onChange={(e) =>
-                        setCombatantHpManual('npc', Number(e.target.value))
-                      }
-                      className="w-11 px-1 py-0.5 text-right bg-stone-900 border border-stone-700 text-red-300"
-                      title="Editar vida atual do oponente diretamente"
-                    />
-                    <span>/</span>
-                    <input
-                      type="number"
-                      value={renderedDuel.npc.hpMax}
-                      onChange={(e) =>
-                        setCombatantHpManual(
-                          'npc',
-                          renderedDuel.npc.hpCurrent,
-                          Number(e.target.value)
-                        )
-                      }
-                      className="w-11 px-1 py-0.5 bg-stone-900 border border-stone-700 text-stone-300"
-                      title="Editar vida máxima do oponente"
-                    />
-                    <span className="text-[10px] text-stone-400">PV</span>
-                  </div>
-                </div>
-
-                <div className="w-full h-1.5 bg-stone-800 overflow-hidden">
-                  <div
-                    className="h-full bg-red-600 transition-all duration-200"
-                    style={{
-                      width: `${Math.max(
-                        0,
-                        Math.min(
-                          100,
-                          (renderedDuel.npc.hpCurrent / Math.max(1, renderedDuel.npc.hpMax)) *
-                            100
-                        )
-                      )}%`,
-                    }}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between gap-1 text-[10px]">
-                  <div className="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('npc', -10)}
-                      className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
-                    >
-                      -10
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('npc', -5)}
-                      className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
-                    >
-                      -5
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('npc', -1)}
-                      className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
-                    >
-                      -1
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('npc', 1)}
-                      className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
-                    >
-                      +1
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adjustCombatantHpSilent('npc', 5)}
-                      className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
-                    >
-                      +5
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-0.5">
-                    <input
-                      type="number"
-                      min={1}
-                      value={manualNpcDelta}
-                      onChange={(e) => setManualNpcDelta(e.target.value)}
-                      className="w-9 px-1 py-0.5 bg-stone-900 border border-stone-700 text-center text-stone-200 tabular-nums"
-                      title="Valor personalizado de vida"
-                    />
-                    <button
-                      type="button"
-                      onClick={() =>
-                        adjustCombatantHpSilent(
-                          'npc',
-                          -Math.max(1, Number(manualNpcDelta) || 1)
-                        )
-                      }
-                      className="px-1.5 py-0.5 bg-red-800 hover:bg-red-700 text-white font-bold"
-                      title="Tirar esse valor da vida"
-                    >
-                      -
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        adjustCombatantHpSilent(
-                          'npc',
-                          Math.max(1, Number(manualNpcDelta) || 1)
-                        )
-                      }
-                      className="px-1.5 py-0.5 bg-emerald-800 hover:bg-emerald-700 text-white font-bold"
-                      title="Somar esse valor na vida"
-                    >
-                      +
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* LAYER 3 (z-20): Interactive 2D FX Canvas Overlay (Particles + Corte Slash + Impacto/Tiro/Magia Shockwaves) */}
-      <canvas
-        ref={fxCanvasRef}
-        className="absolute inset-0 w-full h-full pointer-events-none z-20"
-      />
 
       {/* LAYER 4 (z-30): GM-ONLY Top Control Bar (Players & TV have 100% pure unobstructed 3D Arena view!) */}
       {mode === 'gm' && onUpdateDuel && (
