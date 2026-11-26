@@ -1,0 +1,613 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net — default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Primitives
+    // -------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidRoomCode(code) {
+      return code is string && code.size() == 6 && code.matches('^[A-Z0-9]{6}$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isCampaignGM(campaignId) {
+      return exists(/databases/$(database)/documents/campaigns/$(campaignId)) &&
+        get(/databases/$(database)/documents/campaigns/$(campaignId)).data.gmUid == request.auth.uid;
+    }
+
+    function isCampaignMember(campaignId) {
+      return isCampaignGM(campaignId) ||
+        exists(/databases/$(database)/documents/campaigns/$(campaignId)/members/$(request.auth.uid));
+    }
+
+    function isValidTheme(t) {
+      return t is map &&
+        t.keys().hasAll(['preset', 'isDark', 'bgCanvas', 'bgSurface', 'bgSubtle', 'textPrimary', 'textMuted', 'borderColor', 'accentColor']) &&
+        t.keys().hasOnly(['preset', 'isDark', 'bgCanvas', 'bgSurface', 'bgSubtle', 'textPrimary', 'textMuted', 'borderColor', 'accentColor', 'fontFamily', 'effects']) &&
+        t.preset is string && t.preset.size() >= 1 && t.preset.size() <= 40 &&
+        t.isDark is bool &&
+        t.bgCanvas is string && t.bgCanvas.size() >= 4 && t.bgCanvas.size() <= 32 &&
+        t.bgSurface is string && t.bgSurface.size() >= 4 && t.bgSurface.size() <= 32 &&
+        t.bgSubtle is string && t.bgSubtle.size() >= 4 && t.bgSubtle.size() <= 32 &&
+        t.textPrimary is string && t.textPrimary.size() >= 4 && t.textPrimary.size() <= 32 &&
+        t.textMuted is string && t.textMuted.size() >= 4 && t.textMuted.size() <= 32 &&
+        t.borderColor is string && t.borderColor.size() >= 4 && t.borderColor.size() <= 32 &&
+        t.accentColor is string && t.accentColor.size() >= 4 && t.accentColor.size() <= 32 &&
+        (!('fontFamily' in t) || (t.fontFamily is string && t.fontFamily.size() >= 1 && t.fontFamily.size() <= 40)) &&
+        (!('effects' in t) || t.effects is map);
+    }
+
+    function isValidGrid(g) {
+      return g is map &&
+        g.keys().hasAll(['enabled', 'cellSizePx', 'unitLabel', 'unitValue', 'opacity', 'offsetX', 'offsetY']) &&
+        g.keys().hasOnly(['enabled', 'cellSizePx', 'unitLabel', 'unitValue', 'opacity', 'offsetX', 'offsetY']) &&
+        g.enabled is bool &&
+        g.cellSizePx is number && g.cellSizePx >= 16 && g.cellSizePx <= 240 &&
+        g.unitLabel is string && g.unitLabel.size() >= 1 && g.unitLabel.size() <= 16 &&
+        g.unitValue is number && g.unitValue > 0 && g.unitValue <= 1000 &&
+        g.opacity is number && g.opacity >= 0 && g.opacity <= 1 &&
+        g.offsetX is number && g.offsetX >= -500 && g.offsetX <= 500 &&
+        g.offsetY is number && g.offsetY >= -500 && g.offsetY <= 500;
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation Blueprints (Anti-Update-Gap)
+    // -------------------------------------------------------------------------
+    function isValidCampaign(data) {
+      return data.keys().hasAll(['title', 'system', 'description', 'gmUid', 'gmName', 'roomCode', 'activeSceneId', 'theme', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['title', 'system', 'description', 'gmUid', 'gmName', 'roomCode', 'activeSceneId', 'theme', 'folders', 'createdAt', 'updatedAt']) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.system is string && data.system.size() >= 1 && data.system.size() <= 80 &&
+        data.description is string && data.description.size() <= 500 &&
+        isValidId(data.gmUid) &&
+        data.gmName is string && data.gmName.size() >= 1 && data.gmName.size() <= 80 &&
+        isValidRoomCode(data.roomCode) &&
+        data.activeSceneId is string && data.activeSceneId.size() <= 128 &&
+        isValidTheme(data.theme) &&
+        (!('folders' in data) || (data.folders is list && data.folders.size() <= 40 && (data.folders.size() == 0 || data.folders[0] is string))) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRoomCodeIndex(data) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'campaignTitle', 'createdAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'campaignTitle', 'createdAt']) &&
+        isValidId(data.campaignId) &&
+        isValidId(data.gmUid) &&
+        data.campaignTitle is string && data.campaignTitle.size() >= 1 && data.campaignTitle.size() <= 120 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidCampaignMember(data, campaignId, memberId) {
+      return data.keys().hasAll(['uid', 'gmUid', 'campaignId', 'displayName', 'role', 'joinedAt']) &&
+        data.keys().hasOnly(['uid', 'gmUid', 'campaignId', 'displayName', 'role', 'joinedAt']) &&
+        isValidId(data.uid) && data.uid == memberId &&
+        isValidId(data.gmUid) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.role in ['gm', 'player'] &&
+        data.joinedAt is timestamp;
+    }
+
+    function isValidUserMembership(data, userId, campaignId) {
+      return data.keys().hasAll(['uid', 'campaignId', 'campaignTitle', 'roomCode', 'role', 'joinedAt']) &&
+        data.keys().hasOnly(['uid', 'campaignId', 'campaignTitle', 'roomCode', 'role', 'joinedAt']) &&
+        isValidId(data.uid) && data.uid == userId &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        data.campaignTitle is string && data.campaignTitle.size() >= 1 && data.campaignTitle.size() <= 120 &&
+        isValidRoomCode(data.roomCode) &&
+        data.role in ['gm', 'player'] &&
+        data.joinedAt is timestamp;
+    }
+
+    function isValidLiveState(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'campaignTitle', 'theme', 'activeScene', 'activeHandout', 'recentPublicRolls', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'campaignTitle', 'theme', 'activeScene', 'activeHandout', 'recentPublicRolls', 'shakePulseMs', 'updatedAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        data.campaignTitle is string && data.campaignTitle.size() >= 1 && data.campaignTitle.size() <= 120 &&
+        isValidTheme(data.theme) &&
+        (data.activeScene == null || data.activeScene is map) &&
+        (data.activeHandout == null || data.activeHandout is map) &&
+        data.recentPublicRolls is list && data.recentPublicRolls.size() <= 40 &&
+        (data.recentPublicRolls.size() == 0 || data.recentPublicRolls[0] is map) &&
+        (!('shakePulseMs' in data) || data.shakePulseMs is number) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidLiveWiki(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'notes', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'notes', 'updatedAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        data.notes is list && data.notes.size() <= 80 &&
+        (data.notes.size() == 0 || data.notes[0] is map) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidMediaAsset(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'uploaderUid', 'fileName', 'mimeType', 'size', 'chunkCount', 'createdAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'uploaderUid', 'fileName', 'mimeType', 'size', 'chunkCount', 'createdAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        isValidId(data.uploaderUid) &&
+        data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 200 &&
+        data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 100 &&
+        data.size is number && data.size > 0 && data.size <= 8388608 &&
+        data.chunkCount is number && data.chunkCount >= 1 && data.chunkCount <= 28 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidMediaChunk(data) {
+      return data.keys().hasAll(['index', 'data']) &&
+        data.keys().hasOnly(['index', 'data']) &&
+        data.index is number && data.index >= 0 && data.index < 28 &&
+        data.data is string && data.data.size() >= 1 && data.data.size() <= 520000;
+    }
+
+    function isValidScene(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'name', 'category', 'imageUrl', 'mediaId', 'order', 'grid', 'fogEnabled', 'fogStrokes', 'tokens', 'linkedMusicId', 'linkedAmbienceId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'name', 'category', 'imageUrl', 'mediaId', 'mediaKind', 'order', 'grid', 'fogEnabled', 'fogStrokes', 'walls', 'dynamicVision', 'tokens', 'linkedMusicId', 'linkedAmbienceId', 'createdAt', 'updatedAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.category in ['tactical', 'landscape', 'location'] &&
+        data.imageUrl is string && data.imageUrl.size() <= 1024 &&
+        data.mediaId is string && data.mediaId.size() <= 128 &&
+        (!('mediaKind' in data) || data.mediaKind in ['image', 'video', 'gif']) &&
+        data.order is number && data.order >= 0 && data.order <= 1000 &&
+        isValidGrid(data.grid) &&
+        data.fogEnabled is bool &&
+        data.fogStrokes is list && data.fogStrokes.size() <= 400 &&
+        (data.fogStrokes.size() == 0 || data.fogStrokes[0] is map) &&
+        (!('walls' in data) || (data.walls is list && data.walls.size() <= 300 && (data.walls.size() == 0 || data.walls[0] is map))) &&
+        (!('dynamicVision' in data) || data.dynamicVision is bool) &&
+        data.tokens is list && data.tokens.size() <= 120 &&
+        (data.tokens.size() == 0 || data.tokens[0] is map) &&
+        data.linkedMusicId is string && data.linkedMusicId.size() <= 128 &&
+        data.linkedAmbienceId is string && data.linkedAmbienceId.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidHandout(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'title', 'kind', 'imageUrl', 'mediaId', 'body', 'targetUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'title', 'kind', 'imageUrl', 'mediaId', 'body', 'targetUid', 'createdAt', 'updatedAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+        data.kind in ['clue', 'npc', 'letter', 'map'] &&
+        data.imageUrl is string && data.imageUrl.size() <= 1024 &&
+        data.mediaId is string && data.mediaId.size() <= 128 &&
+        data.body is string && data.body.size() <= 4000 &&
+        data.targetUid is string && data.targetUid.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSheet(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'ownerUid', 'ownerName', 'name', 'subtitle', 'templateId', 'mode', 'pdfUrl', 'pdfMediaId', 'pdfFileName', 'blocks', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'ownerUid', 'ownerName', 'name', 'subtitle', 'templateId', 'mode', 'avatarUrl', 'avatarMediaId', 'pdfUrl', 'pdfMediaId', 'pdfFileName', 'blocks', 'createdAt', 'updatedAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        isValidId(data.ownerUid) &&
+        data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 80 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.subtitle is string && data.subtitle.size() <= 120 &&
+        data.templateId is string && data.templateId.size() >= 1 && data.templateId.size() <= 80 &&
+        data.mode in ['modular', 'pdf'] &&
+        (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 1024)) &&
+        (!('avatarMediaId' in data) || (data.avatarMediaId is string && data.avatarMediaId.size() <= 128)) &&
+        data.pdfUrl is string && data.pdfUrl.size() <= 1024 &&
+        data.pdfMediaId is string && data.pdfMediaId.size() <= 128 &&
+        data.pdfFileName is string && data.pdfFileName.size() <= 200 &&
+        data.blocks is list && data.blocks.size() <= 100 &&
+        (data.blocks.size() == 0 || data.blocks[0] is map) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidNote(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'folder', 'title', 'content', 'visibility', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'folder', 'title', 'content', 'visibility', 'createdAt', 'updatedAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        data.folder is string && data.folder.size() >= 1 && data.folder.size() <= 60 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+        data.content is string && data.content.size() <= 15000 &&
+        data.visibility in ['public', 'gm_only'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidRoll(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'rollerUid', 'rollerName', 'label', 'formula', 'resolvedFormula', 'total', 'summary', 'breakdown', 'outcome', 'visibility', 'createdAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'rollerUid', 'rollerName', 'label', 'formula', 'resolvedFormula', 'total', 'summary', 'breakdown', 'outcome', 'visibility', 'createdAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        isValidId(data.rollerUid) &&
+        data.rollerName is string && data.rollerName.size() >= 1 && data.rollerName.size() <= 80 &&
+        data.label is string && data.label.size() <= 120 &&
+        data.formula is string && data.formula.size() >= 1 && data.formula.size() <= 120 &&
+        data.resolvedFormula is string && data.resolvedFormula.size() <= 120 &&
+        data.total is number &&
+        data.summary is string && data.summary.size() <= 240 &&
+        data.breakdown is string && data.breakdown.size() <= 400 &&
+        data.outcome in ['normal', 'crit', 'fumble', 'success', 'failure', 'chat'] &&
+        data.visibility in ['public', 'gm_only'] &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidAudioDsp(d) {
+      return d is map &&
+        d.keys().hasAll(['startSec', 'speed', 'pitch', 'muffle']) &&
+        d.keys().hasOnly(['startSec', 'speed', 'pitch', 'muffle']) &&
+        d.startSec is number && d.startSec >= 0 && d.startSec <= 36000 &&
+        d.speed is number && d.speed >= 0.5 && d.speed <= 2.0 &&
+        d.pitch is number && d.pitch >= -12 && d.pitch <= 12 &&
+        d.muffle is number && d.muffle >= 0 && d.muffle <= 100;
+    }
+
+    function isValidAudioTrack(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'name', 'layer', 'sourceType', 'synthPreset', 'url', 'mediaId', 'createdAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'name', 'layer', 'sourceType', 'synthPreset', 'url', 'mediaId', 'dsp', 'createdAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.layer in ['music', 'ambience', 'sfx'] &&
+        data.sourceType in ['url', 'media', 'youtube'] &&
+        data.synthPreset is string && data.synthPreset.size() <= 60 &&
+        data.url is string && data.url.size() <= 1024 &&
+        data.mediaId is string && data.mediaId.size() <= 128 &&
+        (!('dsp' in data) || isValidAudioDsp(data.dsp)) &&
+        data.createdAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Room Code Lookup
+    // -------------------------------------------------------------------------
+    match /roomCodes/{roomCode} {
+      allow get: if isVerified() && isValidRoomCode(roomCode);
+      allow list: if false;
+      allow create: if isVerified() &&
+        isValidRoomCode(roomCode) &&
+        isValidRoomCodeIndex(incoming()) &&
+        incoming().gmUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        existsAfter(/databases/$(database)/documents/campaigns/$(incoming().campaignId));
+      allow update: if false;
+      allow delete: if isVerified() &&
+        isValidRoomCode(roomCode) &&
+        existing().gmUid == request.auth.uid;
+    }
+
+    // -------------------------------------------------------------------------
+    // User Memberships
+    // -------------------------------------------------------------------------
+    match /users/{userId}/memberships/{campaignId} {
+      allow get: if isVerified() && isValidId(userId) && isValidId(campaignId) && userId == request.auth.uid;
+      allow list: if isVerified() && userId == request.auth.uid && resource.data.uid == request.auth.uid;
+      allow create: if isVerified() &&
+        isValidId(userId) && isValidId(campaignId) &&
+        userId == request.auth.uid &&
+        isValidUserMembership(incoming(), userId, campaignId) &&
+        incoming().joinedAt == request.time &&
+        existsAfter(/databases/$(database)/documents/campaigns/$(campaignId));
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(userId) && isValidId(campaignId) && userId == request.auth.uid;
+    }
+
+    // -------------------------------------------------------------------------
+    // Campaigns & Subcollections
+    // -------------------------------------------------------------------------
+    match /campaigns/{campaignId} {
+      allow get: if isVerified() && isValidId(campaignId) &&
+        (existing().gmUid == request.auth.uid ||
+          exists(/databases/$(database)/documents/campaigns/$(campaignId)/members/$(request.auth.uid)));
+      allow list: if isVerified() && resource.data.gmUid == request.auth.uid;
+      allow create: if isVerified() &&
+        isValidId(campaignId) &&
+        isValidCampaign(incoming()) &&
+        incoming().gmUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerified() &&
+        isValidId(campaignId) &&
+        isValidCampaign(incoming()) &&
+        existing().gmUid == request.auth.uid &&
+        incoming().gmUid == existing().gmUid &&
+        incoming().roomCode == existing().roomCode &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'system', 'description', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['activeSceneId', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['theme', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['folders', 'updatedAt'])
+        );
+      allow delete: if isVerified() && isValidId(campaignId) && existing().gmUid == request.auth.uid;
+
+      // Members (Master Gate)
+      match /members/{memberId} {
+        allow get: if isVerified() && isValidId(campaignId) && isValidId(memberId) &&
+          (memberId == request.auth.uid || isCampaignGM(campaignId));
+        allow list: if isVerified() && resource.data.gmUid == request.auth.uid;
+        allow create: if isVerified() &&
+          isValidId(campaignId) && isValidId(memberId) &&
+          isValidCampaignMember(incoming(), campaignId, memberId) &&
+          incoming().uid == request.auth.uid &&
+          incoming().joinedAt == request.time &&
+          exists(/databases/$(database)/documents/campaigns/$(campaignId)) &&
+          incoming().gmUid == get(/databases/$(database)/documents/campaigns/$(campaignId)).data.gmUid &&
+          (
+            (incoming().role == 'gm' && incoming().gmUid == request.auth.uid) ||
+            (incoming().role == 'player' && incoming().gmUid != request.auth.uid)
+          );
+        allow update: if isVerified() &&
+          isValidId(campaignId) && isValidId(memberId) &&
+          isValidCampaignMember(incoming(), campaignId, memberId) &&
+          memberId == request.auth.uid &&
+          incoming().uid == existing().uid &&
+          incoming().gmUid == existing().gmUid &&
+          incoming().campaignId == existing().campaignId &&
+          incoming().role == existing().role &&
+          incoming().joinedAt == existing().joinedAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName']);
+        allow delete: if isVerified() && isValidId(campaignId) && isValidId(memberId) &&
+          (memberId == request.auth.uid || isCampaignGM(campaignId));
+      }
+
+      // Live Projection State (Second Screen + Mobile Sync)
+      match /live/state {
+        allow get: if isVerified() && isValidId(campaignId) && isCampaignMember(campaignId);
+        allow list: if false;
+        allow create: if isVerified() &&
+          isValidId(campaignId) &&
+          isValidLiveState(incoming(), campaignId) &&
+          incoming().gmUid == request.auth.uid &&
+          incoming().updatedAt == request.time &&
+          isCampaignGM(campaignId);
+        allow update: if isVerified() &&
+          isValidId(campaignId) &&
+          isValidLiveState(incoming(), campaignId) &&
+          incoming().campaignId == existing().campaignId &&
+          incoming().gmUid == existing().gmUid &&
+          incoming().updatedAt == request.time &&
+          (
+            (isCampaignGM(campaignId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['campaignTitle', 'theme', 'activeScene', 'activeHandout', 'recentPublicRolls', 'shakePulseMs', 'updatedAt'])) ||
+            (isCampaignMember(campaignId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['recentPublicRolls', 'updatedAt']))
+          );
+        allow delete: if isVerified() && isValidId(campaignId) && isCampaignGM(campaignId);
+      }
+
+      // Published Player-Visible Wiki Notes
+      match /live/wiki {
+        allow get: if isVerified() && isValidId(campaignId) && isCampaignMember(campaignId);
+        allow list: if false;
+        allow create: if isVerified() &&
+          isValidId(campaignId) &&
+          isValidLiveWiki(incoming(), campaignId) &&
+          incoming().gmUid == request.auth.uid &&
+          incoming().updatedAt == request.time &&
+          isCampaignGM(campaignId);
+        allow update: if isVerified() &&
+          isValidId(campaignId) &&
+          isValidLiveWiki(incoming(), campaignId) &&
+          isCampaignGM(campaignId) &&
+          incoming().campaignId == existing().campaignId &&
+          incoming().gmUid == existing().gmUid &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['notes', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(campaignId) && isCampaignGM(campaignId);
+      }
+
+      // Cloud-Persisted Campaign Media (User Audio, Photos, PDFs)
+      match /mediaAssets/{mediaId} {
+        allow get: if isVerified() && isValidId(campaignId) && isValidId(mediaId) && isCampaignMember(campaignId);
+        allow list: if false;
+        allow create: if isVerified() &&
+          isValidId(campaignId) && isValidId(mediaId) &&
+          isValidMediaAsset(incoming(), campaignId) &&
+          incoming().uploaderUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          isCampaignMember(campaignId) &&
+          incoming().gmUid == get(/databases/$(database)/documents/campaigns/$(campaignId)).data.gmUid;
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(campaignId) && isValidId(mediaId) &&
+          (existing().uploaderUid == request.auth.uid || isCampaignGM(campaignId));
+
+        match /chunks/{chunkId} {
+          allow get: if isVerified() && isValidId(campaignId) && isValidId(mediaId) && isValidId(chunkId) && isCampaignMember(campaignId);
+          allow list: if false;
+          allow create: if isVerified() &&
+            isValidId(campaignId) && isValidId(mediaId) && isValidId(chunkId) &&
+            isValidMediaChunk(incoming()) &&
+            isCampaignMember(campaignId) &&
+            exists(/databases/$(database)/documents/campaigns/$(campaignId)/mediaAssets/$(mediaId)) &&
+            get(/databases/$(database)/documents/campaigns/$(campaignId)/mediaAssets/$(mediaId)).data.uploaderUid == request.auth.uid;
+          allow update: if false;
+          allow delete: if isVerified() && isValidId(campaignId) && isValidId(mediaId) && isValidId(chunkId) && isCampaignGM(campaignId);
+        }
+      }
+
+      // Scenes
+      match /scenes/{sceneId} {
+        allow get: if isVerified() && isValidId(campaignId) && isValidId(sceneId) && isCampaignMember(campaignId);
+        allow list: if isVerified() && resource.data.gmUid == request.auth.uid;
+        allow create: if isVerified() &&
+          isValidId(campaignId) && isValidId(sceneId) &&
+          isValidScene(incoming(), campaignId) &&
+          incoming().gmUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isCampaignGM(campaignId);
+        allow update: if isVerified() &&
+          isValidId(campaignId) && isValidId(sceneId) &&
+          isValidScene(incoming(), campaignId) &&
+          isCampaignGM(campaignId) &&
+          incoming().campaignId == existing().campaignId &&
+          incoming().gmUid == existing().gmUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'imageUrl', 'mediaId', 'mediaKind', 'order', 'linkedMusicId', 'linkedAmbienceId', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['grid', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['fogEnabled', 'fogStrokes', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['walls', 'dynamicVision', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['tokens', 'updatedAt'])
+          );
+        allow delete: if isVerified() && isValidId(campaignId) && isValidId(sceneId) && isCampaignGM(campaignId);
+      }
+
+      // Handouts
+      match /handouts/{handoutId} {
+        allow get: if isVerified() && isValidId(campaignId) && isValidId(handoutId) &&
+          (existing().gmUid == request.auth.uid ||
+            (isCampaignMember(campaignId) && (existing().targetUid == request.auth.uid || existing().targetUid == 'all')));
+        allow list: if isVerified() &&
+          (resource.data.gmUid == request.auth.uid || resource.data.targetUid == request.auth.uid);
+        allow create: if isVerified() &&
+          isValidId(campaignId) && isValidId(handoutId) &&
+          isValidHandout(incoming(), campaignId) &&
+          incoming().gmUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isCampaignGM(campaignId);
+        allow update: if isVerified() &&
+          isValidId(campaignId) && isValidId(handoutId) &&
+          isValidHandout(incoming(), campaignId) &&
+          isCampaignGM(campaignId) &&
+          incoming().campaignId == existing().campaignId &&
+          incoming().gmUid == existing().gmUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['title', 'kind', 'imageUrl', 'mediaId', 'body', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['targetUid', 'updatedAt'])
+          );
+        allow delete: if isVerified() && isValidId(campaignId) && isValidId(handoutId) && isCampaignGM(campaignId);
+      }
+
+      // Character Sheets (Modular & PDF)
+      match /sheets/{sheetId} {
+        allow get: if isVerified() && isValidId(campaignId) && isValidId(sheetId) &&
+          (existing().gmUid == request.auth.uid || existing().ownerUid == request.auth.uid);
+        allow list: if isVerified() &&
+          (resource.data.gmUid == request.auth.uid || resource.data.ownerUid == request.auth.uid);
+        allow create: if isVerified() &&
+          isValidId(campaignId) && isValidId(sheetId) &&
+          isValidSheet(incoming(), campaignId) &&
+          incoming().ownerUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isCampaignMember(campaignId) &&
+          incoming().gmUid == get(/databases/$(database)/documents/campaigns/$(campaignId)).data.gmUid;
+        allow update: if isVerified() &&
+          isValidId(campaignId) && isValidId(sheetId) &&
+          isValidSheet(incoming(), campaignId) &&
+          incoming().campaignId == existing().campaignId &&
+          incoming().gmUid == existing().gmUid &&
+          incoming().ownerUid == existing().ownerUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          (existing().ownerUid == request.auth.uid || isCampaignGM(campaignId)) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'subtitle', 'templateId', 'mode', 'avatarUrl', 'avatarMediaId', 'pdfUrl', 'pdfMediaId', 'pdfFileName', 'blocks', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(campaignId) && isValidId(sheetId) &&
+          (existing().ownerUid == request.auth.uid || isCampaignGM(campaignId));
+      }
+
+      // Campaign Notes
+      match /notes/{noteId} {
+        allow get: if isVerified() && isValidId(campaignId) && isValidId(noteId) &&
+          (existing().gmUid == request.auth.uid ||
+            (existing().visibility == 'public' && isCampaignMember(campaignId)));
+        allow list: if isVerified() && resource.data.gmUid == request.auth.uid;
+        allow create: if isVerified() &&
+          isValidId(campaignId) && isValidId(noteId) &&
+          isValidNote(incoming(), campaignId) &&
+          incoming().gmUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isCampaignGM(campaignId);
+        allow update: if isVerified() &&
+          isValidId(campaignId) && isValidId(noteId) &&
+          isValidNote(incoming(), campaignId) &&
+          isCampaignGM(campaignId) &&
+          incoming().campaignId == existing().campaignId &&
+          incoming().gmUid == existing().gmUid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['folder', 'title', 'content', 'visibility', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(campaignId) && isValidId(noteId) && isCampaignGM(campaignId);
+      }
+
+      // Dice Rolls & Chat
+      match /rolls/{rollId} {
+        allow get: if isVerified() && isValidId(campaignId) && isValidId(rollId) &&
+          (existing().gmUid == request.auth.uid || existing().rollerUid == request.auth.uid ||
+            (existing().visibility == 'public' && isCampaignMember(campaignId)));
+        allow list: if isVerified() &&
+          (resource.data.gmUid == request.auth.uid || resource.data.rollerUid == request.auth.uid);
+        allow create: if isVerified() &&
+          isValidId(campaignId) && isValidId(rollId) &&
+          isValidRoll(incoming(), campaignId) &&
+          incoming().rollerUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          isCampaignMember(campaignId) &&
+          incoming().gmUid == get(/databases/$(database)/documents/campaigns/$(campaignId)).data.gmUid;
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(campaignId) && isValidId(rollId) && isCampaignGM(campaignId);
+      }
+
+      // User-Uploaded Audio Tracks (Music, Ambience, SFX)
+      match /audioTracks/{trackId} {
+        allow get: if isVerified() && isValidId(campaignId) && isValidId(trackId) && isCampaignGM(campaignId);
+        allow list: if isVerified() && resource.data.gmUid == request.auth.uid;
+        allow create: if isVerified() &&
+          isValidId(campaignId) && isValidId(trackId) &&
+          isValidAudioTrack(incoming(), campaignId) &&
+          incoming().gmUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          isCampaignGM(campaignId);
+        allow update: if isVerified() &&
+          isValidId(campaignId) && isValidId(trackId) &&
+          isValidAudioTrack(incoming(), campaignId) &&
+          isCampaignGM(campaignId) &&
+          incoming().campaignId == existing().campaignId &&
+          incoming().gmUid == existing().gmUid &&
+          incoming().layer == existing().layer &&
+          incoming().sourceType == existing().sourceType &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'dsp']);
+        allow delete: if isVerified() && isValidId(campaignId) && isValidId(trackId) && isCampaignGM(campaignId);
+      }
+    }
+  }
+}

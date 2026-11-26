@@ -1,0 +1,299 @@
+{
+  "entities": {
+    "Campaign": {
+      "title": "Campaign",
+      "description": "A saved RPG campaign with custom visual theme, fonts, scene effects, folders, room code, and active scene reference.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "system": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "description": { "type": "string", "maxLength": 500 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "roomCode": { "type": "string", "pattern": "^[A-Z0-9]{6}$", "maxLength": 6 },
+        "activeSceneId": { "type": "string", "maxLength": 128 },
+        "theme": { "type": "object", "description": "Visual theme tokens including colors, preset, dark mode, fontFamily, and sceneEffects." },
+        "folders": { "type": "array", "description": "Custom wiki note folders (max 40)." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "system", "gmUid", "gmName", "roomCode", "theme", "createdAt", "updatedAt"]
+    },
+    "RoomCodeIndex": {
+      "title": "RoomCodeIndex",
+      "description": "Maps a 6-character room join code to a campaignId for QR code and mobile join.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "campaignTitle": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "campaignTitle", "createdAt"]
+    },
+    "CampaignMember": {
+      "title": "CampaignMember",
+      "description": "Membership record for a GM or player inside a campaign.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "role": { "type": "string", "enum": ["gm", "player"] },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "gmUid", "campaignId", "displayName", "role", "joinedAt"]
+    },
+    "UserMembership": {
+      "title": "UserMembership",
+      "description": "User-scoped index of campaigns joined as a player.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "campaignTitle": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "roomCode": { "type": "string", "pattern": "^[A-Z0-9]{6}$", "maxLength": 6 },
+        "role": { "type": "string", "enum": ["gm", "player"] },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "campaignId", "campaignTitle", "roomCode", "role", "joinedAt"]
+    },
+    "LiveTableState": {
+      "title": "LiveTableState",
+      "description": "Real-time synced projection state for Second Screen TV and connected player devices.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "campaignTitle": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "theme": { "type": "object" },
+        "activeScene": { "type": "object" },
+        "activeHandout": { "type": "object" },
+        "recentPublicRolls": { "type": "array" },
+        "shakePulseMs": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "campaignTitle", "theme", "recentPublicRolls", "updatedAt"]
+    },
+    "LivePublicWiki": {
+      "title": "LivePublicWiki",
+      "description": "Published player-visible campaign notes synced to players without exposing GM secrets.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "notes": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "notes", "updatedAt"]
+    },
+    "MediaAsset": {
+      "title": "MediaAsset",
+      "description": "Cloud-persisted uploaded asset metadata (images, audio, PDFs) belonging to a campaign.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "uploaderUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "mimeType": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "size": { "type": "number" },
+        "chunkCount": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "uploaderUid", "fileName", "mimeType", "size", "chunkCount", "createdAt"]
+    },
+    "MediaChunk": {
+      "title": "MediaChunk",
+      "description": "Bounded base64 slice of a cloud-persisted campaign media asset.",
+      "type": "object",
+      "properties": {
+        "index": { "type": "number" },
+        "data": { "type": "string", "minLength": 1, "maxLength": 520000 }
+      },
+      "required": ["index", "data"]
+    },
+    "Scene": {
+      "title": "Scene",
+      "description": "A complete tabletop scene combining background visual, fog of war shapes, tokens, grid settings, and linked audio tracks.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "category": { "type": "string", "enum": ["tactical", "landscape", "location"] },
+        "imageUrl": { "type": "string", "maxLength": 1024 },
+        "mediaId": { "type": "string", "maxLength": 128 },
+        "mediaKind": { "type": "string", "enum": ["image", "video", "gif"] },
+        "order": { "type": "number" },
+        "grid": { "type": "object" },
+        "fogEnabled": { "type": "boolean" },
+        "fogStrokes": { "type": "array" },
+        "walls": { "type": "array", "description": "Tactical walls and doors blocking line of sight (max 300)." },
+        "dynamicVision": { "type": "boolean", "description": "Whether line-of-sight visibility polygons are active for tokens with vision." },
+        "tokens": { "type": "array" },
+        "linkedMusicId": { "type": "string", "maxLength": 128 },
+        "linkedAmbienceId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "name", "category", "imageUrl", "order", "grid", "fogEnabled", "fogStrokes", "tokens", "createdAt", "updatedAt"]
+    },
+    "Handout": {
+      "title": "Handout",
+      "description": "An image, NPC portrait, or clue card that can be popped up to all screens or sent privately to a single player.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "kind": { "type": "string", "enum": ["clue", "npc", "letter", "map"] },
+        "imageUrl": { "type": "string", "maxLength": 1024 },
+        "mediaId": { "type": "string", "maxLength": 128 },
+        "body": { "type": "string", "maxLength": 4000 },
+        "targetUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "title", "kind", "imageUrl", "body", "targetUid", "createdAt", "updatedAt"]
+    },
+    "CharacterSheet": {
+      "title": "CharacterSheet",
+      "description": "System-agnostic modular block character sheet (freeform or auto-generated from uploaded PDF) plus optional embedded PDF and character portrait.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "ownerUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "ownerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "subtitle": { "type": "string", "maxLength": 120 },
+        "templateId": { "type": "string", "maxLength": 80 },
+        "mode": { "type": "string", "enum": ["modular", "pdf"] },
+        "avatarUrl": { "type": "string", "maxLength": 1024 },
+        "avatarMediaId": { "type": "string", "maxLength": 128 },
+        "pdfUrl": { "type": "string", "maxLength": 1024 },
+        "pdfMediaId": { "type": "string", "maxLength": 128 },
+        "pdfFileName": { "type": "string", "maxLength": 200 },
+        "blocks": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "ownerUid", "ownerName", "name", "templateId", "mode", "blocks", "createdAt", "updatedAt"]
+    },
+    "CampaignNote": {
+      "title": "CampaignNote",
+      "description": "Wiki note organized by folder with explicit public or GM-secret visibility.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "folder": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "content": { "type": "string", "maxLength": 15000 },
+        "visibility": { "type": "string", "enum": ["public", "gm_only"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "folder", "title", "content", "visibility", "createdAt", "updatedAt"]
+    },
+    "DiceRoll": {
+      "title": "DiceRoll",
+      "description": "Chat and dice roll record supporting standard, explosive, advantage/disadvantage, d100 target, and dice pools.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "rollerUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "rollerName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "label": { "type": "string", "maxLength": 120 },
+        "formula": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "resolvedFormula": { "type": "string", "maxLength": 120 },
+        "total": { "type": "number" },
+        "summary": { "type": "string", "maxLength": 240 },
+        "breakdown": { "type": "string", "maxLength": 400 },
+        "outcome": { "type": "string", "enum": ["normal", "crit", "fumble", "success", "failure", "chat"] },
+        "visibility": { "type": "string", "enum": ["public", "gm_only"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "rollerUid", "rollerName", "formula", "total", "summary", "outcome", "visibility", "createdAt"]
+    },
+    "AudioTrack": {
+      "title": "AudioTrack",
+      "description": "User-uploaded or linked audio track for Music (loop), Ambience (layered loop), or SFX (one-shot).",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "layer": { "type": "string", "enum": ["music", "ambience", "sfx"] },
+        "sourceType": { "type": "string", "enum": ["url", "media", "youtube"] },
+        "synthPreset": { "type": "string", "maxLength": 60 },
+        "url": { "type": "string", "maxLength": 1024 },
+        "mediaId": { "type": "string", "maxLength": 128 },
+        "dsp": { "type": "object", "description": "Per-track audio controls: startSec, speed, pitch, muffle." },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "name", "layer", "sourceType", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/campaigns/{campaignId}": {
+      "schema": { "$ref": "#/entities/Campaign" },
+      "description": "Campaign root documents owned by the GM."
+    },
+    "/roomCodes/{roomCode}": {
+      "schema": { "$ref": "#/entities/RoomCodeIndex" },
+      "description": "Lookup table from 6-character room code to campaign metadata."
+    },
+    "/users/{userId}/memberships/{campaignId}": {
+      "schema": { "$ref": "#/entities/UserMembership" },
+      "description": "Per-user list of campaigns joined."
+    },
+    "/campaigns/{campaignId}/members/{memberId}": {
+      "schema": { "$ref": "#/entities/CampaignMember" },
+      "description": "Campaign membership Master Gate."
+    },
+    "/campaigns/{campaignId}/live/state": {
+      "schema": { "$ref": "#/entities/LiveTableState" },
+      "description": "Real-time table state projected to Second Screen and mobile players."
+    },
+    "/campaigns/{campaignId}/live/wiki": {
+      "schema": { "$ref": "#/entities/LivePublicWiki" },
+      "description": "Published player-visible campaign notes."
+    },
+    "/campaigns/{campaignId}/mediaAssets/{mediaId}": {
+      "schema": { "$ref": "#/entities/MediaAsset" },
+      "description": "Cloud-saved campaign media metadata (audio, images, PDFs)."
+    },
+    "/campaigns/{campaignId}/mediaAssets/{mediaId}/chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/MediaChunk" },
+      "description": "Chunked base64 payload slices of cloud-saved campaign media."
+    },
+    "/campaigns/{campaignId}/scenes/{sceneId}": {
+      "schema": { "$ref": "#/entities/Scene" },
+      "description": "Campaign scenes with fog, tokens, grid, and audio links."
+    },
+    "/campaigns/{campaignId}/handouts/{handoutId}": {
+      "schema": { "$ref": "#/entities/Handout" },
+      "description": "Pop-up handouts and individual player clues."
+    },
+    "/campaigns/{campaignId}/sheets/{sheetId}": {
+      "schema": { "$ref": "#/entities/CharacterSheet" },
+      "description": "Modular and PDF character sheets."
+    },
+    "/campaigns/{campaignId}/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/CampaignNote" },
+      "description": "GM wiki notes including secret GM notes."
+    },
+    "/campaigns/{campaignId}/rolls/{rollId}": {
+      "schema": { "$ref": "#/entities/DiceRoll" },
+      "description": "Dice roll and chat history with public and GM-only visibility."
+    },
+    "/campaigns/{campaignId}/audioTracks/{trackId}": {
+      "schema": { "$ref": "#/entities/AudioTrack" },
+      "description": "User-uploaded campaign audio playlists for music, ambience, and SFX."
+    }
+  }
+}

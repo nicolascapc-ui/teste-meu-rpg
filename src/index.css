@@ -1,0 +1,332 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg-canvas: #f6f3eb;
+  --bg-surface: #fdfbf7;
+  --bg-subtle: #ece7db;
+  --text-primary: #1b1917;
+  --text-muted: #5e584f;
+  --border-hairline: #d6cfc0;
+  --accent-primary: #8f2d2d;
+  --accent-contrast: #fdfbf7;
+  --font-display: 'Courier Prime', 'Courier New', monospace;
+  --font-body: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-typewriter {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  button,
+  [role="button"] {
+    cursor: pointer;
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  a:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.vtt-surface {
+  background-color: var(--bg-surface);
+  border-color: var(--border-hairline);
+  color: var(--text-primary);
+}
+
+.vtt-canvas {
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+}
+
+.vtt-subtle {
+  background-color: var(--bg-subtle);
+  border-color: var(--border-hairline);
+  color: var(--text-primary);
+}
+
+.vtt-border {
+  border-color: var(--border-hairline);
+}
+
+.vtt-muted {
+  color: var(--text-muted);
+}
+
+.vtt-accent-btn {
+  background-color: var(--accent-primary);
+  color: var(--accent-contrast);
+}
+
+.vtt-accent-btn:hover {
+  filter: brightness(1.08);
+}
+
+.vtt-accent-text {
+  color: var(--accent-primary);
+}
+
+/* ============================================================================
+   DYNAMIC SCENE VISUAL EFFECTS (CRT, Film Noise, Looping Glitch, Danger/Blood, Shake)
+   ============================================================================ */
+
+@keyframes folioNoiseShift {
+  0% { transform: translate(0, 0); }
+  25% { transform: translate(-3%, 2%); }
+  50% { transform: translate(2%, -2%); }
+  75% { transform: translate(-2%, -1%); }
+  100% { transform: translate(0, 0); }
+}
+
+@keyframes folioCrtFlicker {
+  0%, 100% { opacity: var(--fx-crt-opacity, 0.7); }
+  48% { opacity: calc(var(--fx-crt-opacity, 0.7) * 0.92); }
+  50% { opacity: calc(var(--fx-crt-opacity, 0.7) * 1.0); }
+  52% { opacity: calc(var(--fx-crt-opacity, 0.7) * 0.88); }
+}
+
+@keyframes folioGlitchLoop {
+  0%, 58%, 100% {
+    transform: translate3d(0, 0, 0);
+    opacity: calc(var(--fx-glitch-opacity, 0.6) * 0.25);
+  }
+  62% {
+    transform: translate3d(-7px, 1px, 0) skewX(-3deg);
+    opacity: var(--fx-glitch-opacity, 0.75);
+  }
+  65% {
+    transform: translate3d(8px, -2px, 0) skewX(4deg);
+    opacity: var(--fx-glitch-opacity, 0.75);
+  }
+  69% {
+    transform: translate3d(-3px, 1px, 0);
+    opacity: calc(var(--fx-glitch-opacity, 0.6) * 0.45);
+  }
+  73% {
+    transform: translate3d(6px, 0, 0) skewX(-2deg);
+    opacity: var(--fx-glitch-opacity, 0.75);
+  }
+  77% {
+    transform: translate3d(0, 0, 0);
+    opacity: calc(var(--fx-glitch-opacity, 0.6) * 0.22);
+  }
+}
+
+@keyframes folioGlitchBar {
+  0%, 100% { transform: translateY(-20%); opacity: 0.2; }
+  45% { transform: translateY(35%); opacity: 0.75; }
+  52% { transform: translateY(38%) translateX(8px); opacity: 0.9; }
+  58% { transform: translateY(72%) translateX(-6px); opacity: 0.35; }
+}
+
+@keyframes folioBloodPulse {
+  0%, 100% {
+    opacity: calc(var(--fx-blood-opacity, 0.75) * 0.68);
+    transform: scale(1);
+  }
+  50% {
+    opacity: var(--fx-blood-opacity, 0.75);
+    transform: scale(1.025);
+  }
+}
+
+@keyframes folioScreenShake {
+  0% { transform: translate3d(0, 0, 0); }
+  15% { transform: translate3d(calc(var(--fx-shake-px, 5px) * -1), calc(var(--fx-shake-px, 5px) * 0.6), 0); }
+  30% { transform: translate3d(var(--fx-shake-px, 5px), calc(var(--fx-shake-px, 5px) * -0.8), 0); }
+  45% { transform: translate3d(calc(var(--fx-shake-px, 5px) * -0.75), calc(var(--fx-shake-px, 5px) * -0.55), 0); }
+  60% { transform: translate3d(calc(var(--fx-shake-px, 5px) * 0.85), calc(var(--fx-shake-px, 5px) * 0.7), 0); }
+  75% { transform: translate3d(calc(var(--fx-shake-px, 5px) * -0.55), calc(var(--fx-shake-px, 5px) * 0.45), 0); }
+  90% { transform: translate3d(calc(var(--fx-shake-px, 5px) * 0.45), calc(var(--fx-shake-px, 5px) * -0.35), 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+.fx-crt-scanlines {
+  background-image:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.04) 0px,
+      rgba(255, 255, 255, 0.04) 1px,
+      rgba(0, 0, 0, 0) 1px,
+      rgba(0, 0, 0, 0) 2px,
+      rgba(0, 0, 0, 0.48) 3px,
+      rgba(0, 0, 0, 0.48) 4px
+    ),
+    radial-gradient(ellipse at center, rgba(40, 255, 160, 0.04) 0%, rgba(0, 0, 0, 0.62) 100%);
+  box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.65);
+  animation: folioCrtFlicker 3.2s steps(2) infinite;
+}
+
+.fx-noise-layer {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+  animation: folioNoiseShift 0.2s steps(3) infinite;
+}
+
+.fx-glitch-layer {
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 32, 92, 0.34) 0px,
+      rgba(255, 32, 92, 0.34) 4px,
+      transparent 4px,
+      transparent 22px,
+      rgba(20, 230, 255, 0.32) 22px,
+      rgba(20, 230, 255, 0.32) 26px,
+      transparent 26px,
+      transparent 52px
+    );
+  animation: folioGlitchLoop 1.7s steps(2) infinite;
+}
+
+.fx-glitch-bar {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(255, 35, 95, 0.38) 38%,
+    rgba(255, 255, 255, 0.28) 50%,
+    rgba(30, 230, 255, 0.38) 62%,
+    transparent 100%
+  );
+  animation: folioGlitchBar 2.1s steps(3) infinite;
+}
+
+.fx-blood-vignette {
+  background: radial-gradient(
+    ellipse at center,
+    rgba(160, 12, 20, 0) 38%,
+    rgba(165, 10, 20, 0.56) 72%,
+    rgba(110, 4, 12, 0.96) 100%
+  );
+  box-shadow: inset 0 0 110px rgba(155, 8, 18, 0.85);
+  animation: folioBloodPulse 1.5s ease-in-out infinite;
+}
+
+.fx-shake-active {
+  animation: folioScreenShake 0.24s linear infinite;
+}
+
+/* ============================================================================
+   TOKEN BEHAVIORS, HIT RECOIL & TEXTURE OVERLAYS
+   ============================================================================ */
+
+@keyframes tokenFloat {
+  0%, 100% { transform: translate(-50%, -50%) translateY(0px); }
+  50% { transform: translate(-50%, -50%) translateY(-6px); }
+}
+
+@keyframes tokenPulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); }
+  50% { transform: translate(-50%, -50%) scale(1.06); }
+}
+
+@keyframes tokenTremble {
+  0%, 100% { transform: translate(-50%, -50%) translate3d(0, 0, 0); }
+  25% { transform: translate(-50%, -50%) translate3d(-1.5px, 1px, 0); }
+  50% { transform: translate(-50%, -50%) translate3d(1.5px, -1px, 0); }
+  75% { transform: translate(-50%, -50%) translate3d(-1px, -1px, 0); }
+}
+
+@keyframes tokenHitRecoil {
+  0% { transform: translate(-50%, -50%) scale(1.16) rotate(-7deg); filter: brightness(1.6) saturate(1.8); }
+  25% { transform: translate(-50%, -50%) translateX(6px) rotate(5deg); }
+  50% { transform: translate(-50%, -50%) translateX(-5px) rotate(-4deg); }
+  75% { transform: translate(-50%, -50%) translateX(3px) rotate(2deg); }
+  100% { transform: translate(-50%, -50%) scale(1) rotate(0deg); filter: none; }
+}
+
+@keyframes tokenSpinRing {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.token-behavior-float {
+  animation: tokenFloat 2.8s ease-in-out infinite;
+}
+
+.token-behavior-pulse {
+  animation: tokenPulse 2.1s ease-in-out infinite;
+}
+
+.token-behavior-tremble {
+  animation: tokenTremble 0.22s linear infinite;
+}
+
+.token-hit-active {
+  animation: tokenHitRecoil 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards !important;
+}
+
+.token-spin-aura {
+  animation: tokenSpinRing 7s linear infinite;
+}
+
+.token-tex-grain {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 120 120' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.45'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+}
+
+.token-tex-holo {
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.35), rgba(244, 114, 182, 0.22) 50%, rgba(167, 139, 250, 0.35));
+  mix-blend-mode: screen;
+}
+
+.token-tex-metallic {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.42) 0%, rgba(255, 255, 255, 0.02) 45%, rgba(0, 0, 0, 0.38) 100%);
+  mix-blend-mode: overlay;
+}
+
+.token-tex-aged {
+  background: radial-gradient(circle, rgba(180, 130, 70, 0.12) 40%, rgba(72, 42, 16, 0.55) 100%);
+  mix-blend-mode: multiply;
+}
+
+/* Minimalist subtle scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 55%, transparent);
+}
+
+/* Respect reduced motion for UI chrome without killing explicit GM tabletop FX or token effects */
+@media (prefers-reduced-motion: reduce) {
+  body :not(.fx-shake-active):not(.fx-crt-scanlines):not(.fx-noise-layer):not(.fx-glitch-layer):not(.fx-glitch-bar):not(.fx-blood-vignette):not(.token-behavior-float):not(.token-behavior-pulse):not(.token-behavior-tremble):not(.token-hit-active):not(.token-spin-aura) {
+    transition-duration: 0.01ms;
+  }
+}
