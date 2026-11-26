@@ -144,7 +144,8 @@ export function sanitizePublicDuelState(
 export function toLiveSceneSnapshot(
   scene: Scene,
   activeDuel?: ActiveDuelState | null,
-  duelConfig?: SceneDuelConfig
+  duelConfig?: SceneDuelConfig,
+  playerViewMode?: 'scene' | 'clues' | 'dice' | 'standby'
 ): LiveSceneSnapshot {
   return stripUndefinedDeep({
     id: scene.id,
@@ -161,6 +162,7 @@ export function toLiveSceneSnapshot(
     tokens: (scene.tokens || []).filter((t) => !t.hiddenFromPlayers),
     activeDuel: sanitizePublicDuelState(activeDuel),
     duelConfig,
+    playerViewMode: playerViewMode || 'scene',
   });
 }
 
@@ -174,7 +176,8 @@ export async function syncLiveDuelState(
   const snapshot = toLiveSceneSnapshot(
     scene,
     activeDuel,
-    duelConfig || currentLiveState?.activeScene?.duelConfig
+    duelConfig || currentLiveState?.activeScene?.duelConfig,
+    currentLiveState?.activeScene?.playerViewMode || 'scene'
   );
   if (currentLiveState) {
     broadcastLiveState(campaignId, {
@@ -185,6 +188,30 @@ export async function syncLiveDuelState(
   try {
     await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
       activeScene: snapshot,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
+  }
+}
+
+export async function syncPlayerViewMode(
+  campaignId: string,
+  playerViewMode: 'scene' | 'clues' | 'dice' | 'standby',
+  currentLiveState: LiveTableState | null
+) {
+  if (!currentLiveState || !currentLiveState.activeScene) return;
+  const updatedSnapshot: LiveSceneSnapshot = stripUndefinedDeep({
+    ...currentLiveState.activeScene,
+    playerViewMode,
+  });
+  broadcastLiveState(campaignId, {
+    ...currentLiveState,
+    activeScene: updatedSnapshot,
+  });
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      activeScene: updatedSnapshot,
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -840,7 +867,12 @@ export async function activateScene(
   scene: Scene,
   currentLiveState: LiveTableState | null
 ) {
-  const snapshot = toLiveSceneSnapshot(scene);
+  const snapshot = toLiveSceneSnapshot(
+    scene,
+    undefined,
+    undefined,
+    currentLiveState?.activeScene?.playerViewMode || 'scene'
+  );
   if (currentLiveState) {
     broadcastLiveState(campaignId, { ...currentLiveState, activeScene: snapshot });
   }
@@ -918,7 +950,12 @@ export async function updateSceneGrid(
 ) {
   const cleanGrid = sanitizeGridConfig(grid);
   const updatedScene: Scene = { ...scene, grid: cleanGrid };
-  const snapshot = toLiveSceneSnapshot(updatedScene);
+  const snapshot = toLiveSceneSnapshot(
+    updatedScene,
+    liveState?.activeScene?.activeDuel,
+    liveState?.activeScene?.duelConfig,
+    liveState?.activeScene?.playerViewMode || 'scene'
+  );
   if (isActive && liveState) {
     broadcastLiveState(campaignId, { ...liveState, activeScene: snapshot });
   }
@@ -953,7 +990,12 @@ export async function updateSceneFog(
 ) {
   const bounded = stripUndefinedDeep(fogStrokes.slice(-FIELD_LIMITS.MAX_FOG_STROKES));
   const updatedScene: Scene = { ...scene, fogEnabled, fogStrokes: bounded };
-  const snapshot = toLiveSceneSnapshot(updatedScene);
+  const snapshot = toLiveSceneSnapshot(
+    updatedScene,
+    liveState?.activeScene?.activeDuel,
+    liveState?.activeScene?.duelConfig,
+    liveState?.activeScene?.playerViewMode || 'scene'
+  );
   if (isActive && liveState) {
     broadcastLiveState(campaignId, { ...liveState, activeScene: snapshot });
   }
@@ -989,7 +1031,12 @@ export async function updateSceneWalls(
 ) {
   const bounded = stripUndefinedDeep(walls.slice(0, FIELD_LIMITS.MAX_WALLS));
   const updatedScene: Scene = { ...scene, walls: bounded, dynamicVision };
-  const snapshot = toLiveSceneSnapshot(updatedScene);
+  const snapshot = toLiveSceneSnapshot(
+    updatedScene,
+    liveState?.activeScene?.activeDuel,
+    liveState?.activeScene?.duelConfig,
+    liveState?.activeScene?.playerViewMode || 'scene'
+  );
   if (isActive && liveState) {
     broadcastLiveState(campaignId, { ...liveState, activeScene: snapshot });
   }
@@ -1024,7 +1071,12 @@ export async function updateSceneTokens(
 ) {
   const bounded = stripUndefinedDeep(tokens.slice(0, FIELD_LIMITS.MAX_TOKENS));
   const updatedScene: Scene = { ...scene, tokens: bounded };
-  const snapshot = toLiveSceneSnapshot(updatedScene);
+  const snapshot = toLiveSceneSnapshot(
+    updatedScene,
+    liveState?.activeScene?.activeDuel,
+    liveState?.activeScene?.duelConfig,
+    liveState?.activeScene?.playerViewMode || 'scene'
+  );
   if (isActive && liveState) {
     broadcastLiveState(campaignId, { ...liveState, activeScene: snapshot });
   }

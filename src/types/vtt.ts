@@ -79,6 +79,7 @@ export type TokenOutlineStyle = 'solid' | 'dashed' | 'double' | 'glow' | 'none';
 export type TokenTexture = 'none' | 'grain' | 'holo' | 'metallic' | 'aged';
 export type TokenShadow = 'none' | 'soft' | 'dramatic' | 'colored';
 export type TokenBehavior = 'none' | 'float' | 'pulse' | 'spin_ring' | 'tremble';
+export type TokenVitalStatus = 'alive' | 'unconscious' | 'dying' | 'dead';
 
 export type CanvasLayerKind = 'token' | 'image' | 'text' | 'brush';
 export type BrushStyleId = 'pen' | 'marker' | 'chalk' | 'glow' | 'spray' | 'arrow';
@@ -118,6 +119,7 @@ export interface SceneToken {
   texture?: TokenTexture;
   shadow?: TokenShadow;
   behavior?: TokenBehavior;
+  vitalStatus?: TokenVitalStatus;
   hitAtMs?: number;
   statuses?: TokenStatusEffect[];
   visionEnabled?: boolean;
@@ -440,6 +442,7 @@ export interface ActiveDuelState {
   musicTrackId?: string;
   hidePlayerActionsOnScreen: boolean;
   showCombatantNamesOnScreen?: boolean;
+  showCombatInfoOnScreen?: boolean;
   attackSfxMap?: DuelAttackSfxMap;
   player: DuelCombatantState;
   npc: DuelCombatantState;
@@ -458,6 +461,8 @@ export interface SceneDuelConfig {
   attackSfxMap?: DuelAttackSfxMap;
 }
 
+export type PlayerViewSectionMode = 'scene' | 'clues' | 'dice' | 'standby';
+
 export interface LiveSceneSnapshot {
   id: string;
   name: string;
@@ -473,6 +478,7 @@ export interface LiveSceneSnapshot {
   tokens: SceneToken[];
   activeDuel?: ActiveDuelState | null;
   duelConfig?: SceneDuelConfig;
+  playerViewMode?: PlayerViewSectionMode;
 }
 
 export interface LiveTableState {

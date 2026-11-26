@@ -85,7 +85,7 @@ export function SceneEffectsStage({
       {vignetteOpacity > 0 && (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 z-[35]"
+          className="pointer-events-none absolute inset-0 z-[65]"
           style={{
             background: `radial-gradient(ellipse at center, rgba(0,0,0,0) 42%, rgba(0,0,0,${vignetteOpacity}) 100%)`,
           }}
@@ -96,7 +96,7 @@ export function SceneEffectsStage({
       {crtOpacity > 0 && (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 z-[35] fx-crt-scanlines"
+          className="pointer-events-none absolute inset-0 z-[65] fx-crt-scanlines"
           style={{ '--fx-crt-opacity': crtOpacity } as CSSProperties}
         />
       )}
@@ -105,7 +105,7 @@ export function SceneEffectsStage({
       {noiseOpacity > 0 && (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute -inset-4 z-[35] fx-noise-layer"
+          className="pointer-events-none absolute -inset-4 z-[65] fx-noise-layer"
           style={{ opacity: noiseOpacity }}
         />
       )}
@@ -115,12 +115,12 @@ export function SceneEffectsStage({
         <>
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 z-[35] fx-glitch-layer"
+            className="pointer-events-none absolute inset-0 z-[65] fx-glitch-layer"
             style={{ '--fx-glitch-opacity': glitchOpacity } as CSSProperties}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 h-16 z-[35] fx-glitch-bar"
+            className="pointer-events-none absolute inset-x-0 h-16 z-[65] fx-glitch-bar"
             style={{ opacity: glitchOpacity * 0.75 }}
           />
         </>
@@ -130,7 +130,7 @@ export function SceneEffectsStage({
       {bloodOpacity > 0 && (
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 z-[35] fx-blood-vignette"
+          className="pointer-events-none absolute inset-0 z-[65] fx-blood-vignette"
           style={{ '--fx-blood-opacity': bloodOpacity } as CSSProperties}
         />
       )}

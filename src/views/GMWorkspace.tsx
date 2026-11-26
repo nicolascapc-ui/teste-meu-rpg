@@ -19,7 +19,9 @@ import {
   Hand,
   Image as ImageIcon,
   Layers,
+  Lock,
   Maximize2,
+  Monitor,
   Palette,
   PanelRightClose,
   PanelRightOpen,
@@ -28,9 +30,11 @@ import {
   Redo2,
   Ruler,
   SlidersHorizontal,
+  Sparkles,
   Swords,
   Type,
   Undo2,
+  Unlock,
   Volume2,
 } from 'lucide-react';
 import type {
@@ -49,6 +53,7 @@ import type {
   GridConfig,
   Handout,
   LiveTableState,
+  PlayerViewSectionMode,
   Scene,
   SceneDuelConfig,
   SceneToken,
@@ -97,6 +102,7 @@ import {
   subscribeRolls,
   subscribeSheets,
   syncLiveDuelState,
+  syncPlayerViewMode,
   toLiveSceneSnapshot,
   triggerShakePulse,
   updateAudioTrackDsp,
@@ -171,10 +177,15 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   const [brushColor, setBrushColor] = useState('#ef4444');
   const [brushSize, setBrushSize] = useState(5);
   const [showGridPopover, setShowGridPopover] = useState(false);
+  const [showPlayerViewPopover, setShowPlayerViewPopover] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
   const [previewHandout, setPreviewHandout] = useState(false);
   const [toast, setToast] = useState('');
   const [activeRollAnim, setActiveRollAnim] = useState<ActiveDiceAnimation | null>(null);
+
+  // Backstage Mode ("Modo Bastidores"): allows GM to freeze/pin what players see while editing other scenes freely
+  const [isPlayerScenePinned, setIsPlayerScenePinned] = useState(false);
+  const [gmPreviewSceneId, setGmPreviewSceneId] = useState<string | null>(null);
 
   // Asset Vault (Acervo de Fotos & Itens para replicar em 1 clique)
   const [vaultAssets, setVaultAssets] = useState<VaultAssetItem[]>(() =>
@@ -212,7 +223,11 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   const themeSaveTimerRef = useRef<number | null>(null);
   const pendingThemeRef = useRef<CampaignTheme | null>(null);
   const tokenSaveTimerRef = useRef<number | null>(null);
-  const pendingTokensRef = useRef<{ scene: Scene; tokens: SceneToken[] } | null>(null);
+  const pendingTokensRef = useRef<{
+    scene: Scene;
+    tokens: SceneToken[];
+    syncToPlayers: boolean;
+  } | null>(null);
   const lastLiveCloudSyncMsRef = useRef<number>(0);
   const liveStateRef = useRef<LiveTableState | null>(null);
 
@@ -273,12 +288,12 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         window.clearTimeout(tokenSaveTimerRef.current);
         tokenSaveTimerRef.current = null;
         if (pendingTokensRef.current) {
-          const { scene, tokens } = pendingTokensRef.current;
+          const { scene, tokens, syncToPlayers } = pendingTokensRef.current;
           void updateSceneTokens(
             campaignId,
             scene,
             tokens,
-            true,
+            syncToPlayers,
             liveStateRef.current
           ).catch(() => {});
           pendingTokensRef.current = null;
@@ -330,10 +345,25 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     };
   }, [scenes, campaignId]);
 
+  // The scene currently edited by the GM (can differ from campaign.activeSceneId when Modo Bastidores is ON)
   const activeScene = useMemo(() => {
     if (scenes.length === 0) return null;
+    if (isPlayerScenePinned && gmPreviewSceneId) {
+      return (
+        scenes.find((s) => s.id === gmPreviewSceneId) ||
+        scenes.find((s) => s.id === campaign?.activeSceneId) ||
+        scenes[0]
+      );
+    }
     return scenes.find((s) => s.id === campaign?.activeSceneId) || scenes[0];
-  }, [scenes, campaign?.activeSceneId]);
+  }, [scenes, campaign?.activeSceneId, isPlayerScenePinned, gmPreviewSceneId]);
+
+  // Whether edits on `activeScene` should broadcast live to players right now
+  const shouldSyncCurrentSceneToPlayers = useMemo(() => {
+    if (!activeScene || !campaign) return false;
+    if (isPlayerScenePinned) return false;
+    return activeScene.id === campaign.activeSceneId;
+  }, [activeScene, campaign, isPlayerScenePinned]);
 
   useEffect(() => {
     setSceneDuelConfig(loadSceneDuelConfig(campaignId, activeScene));
@@ -341,11 +371,12 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
   const activeSceneForCanvas = useMemo(() => {
     if (!activeScene) return null;
+    const currentViewMode = liveState?.activeScene?.playerViewMode || 'scene';
     return {
-      ...toLiveSceneSnapshot(activeScene, activeDuel, sceneDuelConfig),
+      ...toLiveSceneSnapshot(activeScene, activeDuel, sceneDuelConfig, currentViewMode),
       tokens: activeScene.tokens,
     };
-  }, [activeScene, activeDuel, sceneDuelConfig]);
+  }, [activeScene, activeDuel, sceneDuelConfig, liveState?.activeScene?.playerViewMode]);
 
   const uploadContext = useMemo(
     () => ({
@@ -383,22 +414,27 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       dynamicVision: snap.dynamicVision,
     };
     setScenes((prev) => prev.map((s) => (s.id === restored.id ? restored : s)));
-    const isActive = activeScene?.id === restored.id;
-    if (isActive && liveStateRef.current) {
+    const isLive = !isPlayerScenePinned && campaign.activeSceneId === restored.id;
+    if (isLive && liveStateRef.current) {
       broadcastLiveState(campaign.id, {
         ...liveStateRef.current,
-        activeScene: toLiveSceneSnapshot(restored),
+        activeScene: toLiveSceneSnapshot(
+          restored,
+          activeDuel,
+          sceneDuelConfig,
+          liveStateRef.current.activeScene?.playerViewMode
+        ),
       });
     }
     try {
       await Promise.all([
-        updateSceneTokens(campaign.id, restored, restored.tokens, isActive, liveStateRef.current),
+        updateSceneTokens(campaign.id, restored, restored.tokens, isLive, liveStateRef.current),
         updateSceneWalls(
           campaign.id,
           restored,
           restored.walls || [],
           Boolean(restored.dynamicVision),
-          isActive,
+          isLive,
           liveStateRef.current
         ),
         updateSceneFog(
@@ -406,7 +442,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           restored,
           restored.fogEnabled,
           restored.fogStrokes,
-          isActive,
+          isLive,
           liveStateRef.current
         ),
       ]);
@@ -524,9 +560,17 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     return () => window.removeEventListener('keydown', onKeyDown);
   });
 
-  async function handleSelectScene(scene: Scene) {
+  async function handleSelectScene(scene: Scene, forceProjectToPlayers = false) {
     if (!campaign) return;
-    await activateScene(campaign.id, scene, liveState);
+    setGmPreviewSceneId(scene.id);
+
+    // If Backstage Mode (Modo Bastidores) is ON and we are not forcing projection, only switch the GM's canvas!
+    if (isPlayerScenePinned && !forceProjectToPlayers) {
+      notify(`Editando "${scene.name}" nos bastidores (Tela dos Players continua fixada).`);
+      return;
+    }
+
+    await activateScene(campaign.id, scene, liveStateRef.current);
 
     let audioTriggered = false;
     try {
@@ -550,9 +594,25 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     setAudioIds(audioEngine.getActiveTrackIds());
     notify(
       audioTriggered
-        ? `Cena "${scene.name}" ativada com trilha vinculada.`
-        : `Cena "${scene.name}" ativada.`
+        ? `Cena "${scene.name}" projetada nos Players com trilha vinculada.`
+        : `Cena "${scene.name}" projetada nos Players.`
     );
+  }
+
+  async function handleChangePlayerViewMode(mode: PlayerViewSectionMode) {
+    if (!campaign) return;
+    try {
+      await syncPlayerViewMode(campaign.id, mode, liveStateRef.current);
+      const labelMap: Record<PlayerViewSectionMode, string> = {
+        scene: 'Cena / Mapa',
+        clues: 'Quadro de Pistas & Wiki Pública',
+        dice: 'Central de Dados & Rolagens',
+        standby: 'Tela de Interlúdio / Preparação',
+      };
+      notify(`Visão dos Players alterada para: ${labelMap[mode]}`);
+    } catch {
+      notify('Erro ao sincronizar seção visualizada pelos players.');
+    }
   }
 
   async function handleGridUpdate(nextGrid: GridConfig) {
@@ -561,7 +621,13 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       prev.map((s) => (s.id === activeScene.id ? { ...s, grid: nextGrid } : s))
     );
     try {
-      await updateSceneGrid(campaign.id, activeScene, nextGrid, true, liveState);
+      await updateSceneGrid(
+        campaign.id,
+        activeScene,
+        nextGrid,
+        shouldSyncCurrentSceneToPlayers,
+        liveStateRef.current
+      );
     } catch {
       notify('Não foi possível salvar a configuração do grid.');
     }
@@ -577,8 +643,8 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         activeScene,
         nextEnabled,
         activeScene.fogStrokes,
-        true,
-        liveState
+        shouldSyncCurrentSceneToPlayers,
+        liveStateRef.current
       );
       if (nextEnabled) {
         setActiveTool('fog_reveal');
@@ -606,8 +672,8 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         activeScene,
         activeScene.fogEnabled,
         strokes,
-        true,
-        liveState
+        shouldSyncCurrentSceneToPlayers,
+        liveStateRef.current
       );
     } catch {
       notify('Erro ao sincronizar traços da névoa.');
@@ -621,7 +687,14 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       ? [{ id: `fg_all_${Date.now()}`, mode: 'reveal', shape: 'rect', x: 0, y: 0, w: 1, h: 1 }]
       : [];
     try {
-      await updateSceneFog(campaign.id, activeScene, true, strokes, true, liveState);
+      await updateSceneFog(
+        campaign.id,
+        activeScene,
+        true,
+        strokes,
+        shouldSyncCurrentSceneToPlayers,
+        liveStateRef.current
+      );
       notify(revealAll ? 'Mapa inteiro revelado.' : 'Névoa fechada por completo.');
     } catch {
       notify('Erro ao atualizar a névoa.');
@@ -632,24 +705,35 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   function handleTokensLiveChange(tokens: SceneToken[]) {
     if (!campaign || !activeScene) return;
     const targetScene = activeScene;
-    if (liveStateRef.current) {
+    const syncLive = shouldSyncCurrentSceneToPlayers;
+    if (syncLive && liveStateRef.current) {
       broadcastLiveState(campaign.id, {
         ...liveStateRef.current,
-        activeScene: toLiveSceneSnapshot({ ...targetScene, tokens }),
+        activeScene: toLiveSceneSnapshot(
+          { ...targetScene, tokens },
+          activeDuel,
+          sceneDuelConfig,
+          liveStateRef.current.activeScene?.playerViewMode
+        ),
       });
     }
     const now = Date.now();
     if (now - lastLiveCloudSyncMsRef.current >= 120) {
       lastLiveCloudSyncMsRef.current = now;
-      void updateSceneTokens(campaign.id, targetScene, tokens, true, liveStateRef.current).catch(
-        () => {}
-      );
+      void updateSceneTokens(
+        campaign.id,
+        targetScene,
+        tokens,
+        syncLive,
+        liveStateRef.current
+      ).catch(() => {});
     }
   }
 
   async function handleTokensChange(tokens: SceneToken[], skipUndo = false) {
     if (!campaign || !activeScene) return;
     const targetScene = activeScene;
+    const syncLive = shouldSyncCurrentSceneToPlayers;
     if (!skipUndo) {
       recordUndoSnapshot(targetScene);
     }
@@ -657,15 +741,20 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     setScenes((prev) =>
       prev.map((s) => (s.id === targetScene.id ? { ...s, tokens } : s))
     );
-    // 2. Immediate zero-latency Second Screen TV sync via BroadcastChannel
-    if (liveStateRef.current) {
+    // 2. Immediate zero-latency Second Screen TV sync via BroadcastChannel (when not in Backstage Mode)
+    if (syncLive && liveStateRef.current) {
       broadcastLiveState(campaign.id, {
         ...liveStateRef.current,
-        activeScene: toLiveSceneSnapshot({ ...targetScene, tokens }),
+        activeScene: toLiveSceneSnapshot(
+          { ...targetScene, tokens },
+          activeDuel,
+          sceneDuelConfig,
+          liveStateRef.current.activeScene?.playerViewMode
+        ),
       });
     }
     // 3. Debounced Firestore persistence (140ms)
-    pendingTokensRef.current = { scene: targetScene, tokens };
+    pendingTokensRef.current = { scene: targetScene, tokens, syncToPlayers: syncLive };
     if (tokenSaveTimerRef.current) {
       window.clearTimeout(tokenSaveTimerRef.current);
     }
@@ -679,7 +768,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         campId,
         latest.scene,
         latest.tokens,
-        true,
+        latest.syncToPlayers,
         liveStateRef.current
       ).catch(() => {
         notify('Erro ao salvar alterações da camada na nuvem.');
@@ -697,7 +786,14 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       )
     );
     try {
-      await updateSceneWalls(campaign.id, activeScene, walls, autoVision, true, liveState);
+      await updateSceneWalls(
+        campaign.id,
+        activeScene,
+        walls,
+        autoVision,
+        shouldSyncCurrentSceneToPlayers,
+        liveStateRef.current
+      );
     } catch {
       notify('Erro ao salvar muros e portas.');
     }
@@ -713,8 +809,8 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         activeScene,
         activeScene.walls || [],
         next,
-        true,
-        liveState
+        shouldSyncCurrentSceneToPlayers,
+        liveStateRef.current
       );
       notify(
         next
@@ -1042,6 +1138,13 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   const secondScreenHref = buildAppUrl(`/screen/${campaign.id}`);
   const sceneEffects = getSceneEffects(effectiveTheme);
   const effectiveShakePulseMs = Math.max(localShakePulseMs, liveState?.shakePulseMs || 0);
+  const currentPlayerViewMode: PlayerViewSectionMode =
+    liveState?.activeScene?.playerViewMode || 'scene';
+  const liveProjectedSceneName =
+    liveState?.activeScene?.name ||
+    scenes.find((s) => s.id === campaign.activeSceneId)?.name ||
+    activeScene?.name ||
+    'Cena';
 
   const drawerButtons: Array<{ id: DrawerTab; label: string; icon: typeof Layers }> = [
     { id: 'scenes', label: 'Cenas', icon: Layers },
@@ -1054,7 +1157,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col vtt-canvas">
-      {/* Clean 3-Zone Top Bar */}
+      {/* Minimalist 3-Zone Top Bar with Progressive Disclosure */}
       <header className="h-14 px-4 border-b vtt-border vtt-surface flex items-center justify-between gap-3 shrink-0 z-30">
         {/* Zone 1: Back + Campaign Title + Undo/Redo */}
         <div className="flex items-center gap-2 min-w-0">
@@ -1067,7 +1170,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
-          <span className="text-sm sm:text-base font-bold font-typewriter truncate max-w-[160px] sm:max-w-[220px]">
+          <span className="text-sm sm:text-base font-bold font-typewriter truncate max-w-[140px] sm:max-w-[200px]">
             {campaign.title}
           </span>
           <div className="flex items-center gap-0.5 ml-1">
@@ -1094,264 +1197,424 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           </div>
         </div>
 
-        {/* Zone 2: Photoshop-Inspired Tabletop Tool Controls */}
-        <div className="hidden lg:flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setActiveTool('move')}
-            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTool === 'move'
-                ? 'vtt-accent-btn border-transparent font-semibold'
-                : 'vtt-canvas vtt-border'
-            }`}
-            title="Mover e redimensionar camadas/tokens (V)"
-          >
-            <Hand className="w-3.5 h-3.5" />
-            Mover
-          </button>
+        {/* Zone 2: Grouped Tabletop Tools (Creation Tools + Tactical Utilities + 3D Duel) */}
+        <div className="hidden lg:flex items-center gap-2">
+          {/* Group A: Map Editing & Creation */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setActiveTool('move')}
+              className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTool === 'move'
+                  ? 'vtt-accent-btn border-transparent font-semibold'
+                  : 'vtt-canvas vtt-border'
+              }`}
+              title="Mover, selecionar múltiplos em caixa e redimensionar (V)"
+            >
+              <Hand className="w-3.5 h-3.5" />
+              Mover
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setActiveTool((t) => (t === 'brush' ? 'move' : 'brush'))}
-            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTool === 'brush'
-                ? 'vtt-accent-btn border-transparent font-semibold'
-                : 'vtt-canvas vtt-border'
-            }`}
-            title="Desenhar com pincel no cenário (B)"
-          >
-            <Brush className="w-3.5 h-3.5" />
-            Pincel
-          </button>
+            <button
+              type="button"
+              onClick={() => setActiveTool((t) => (t === 'brush' ? 'move' : 'brush'))}
+              className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTool === 'brush'
+                  ? 'vtt-accent-btn border-transparent font-semibold'
+                  : 'vtt-canvas vtt-border'
+              }`}
+              title="Desenhar com pincel no cenário (B)"
+            >
+              <Brush className="w-3.5 h-3.5" />
+              Pincel
+            </button>
 
-          <button
-            type="button"
-            onClick={() => setActiveTool((t) => (t === 'text' ? 'move' : 'text'))}
-            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTool === 'text'
-                ? 'vtt-accent-btn border-transparent font-semibold'
-                : 'vtt-canvas vtt-border'
-            }`}
-            title="Colocar texto no cenário (T)"
-          >
-            <Type className="w-3.5 h-3.5" />
-            Texto
-          </button>
+            <button
+              type="button"
+              onClick={() => setActiveTool((t) => (t === 'text' ? 'move' : 'text'))}
+              className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTool === 'text'
+                  ? 'vtt-accent-btn border-transparent font-semibold'
+                  : 'vtt-canvas vtt-border'
+              }`}
+              title="Colocar texto no cenário (T)"
+            >
+              <Type className="w-3.5 h-3.5" />
+              Texto
+            </button>
 
-          <button
-            type="button"
-            onClick={() =>
-              setActiveTool((t) =>
-                t === 'wall' || t === 'door' || t === 'wall_erase' ? 'move' : 'wall'
-              )
-            }
-            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTool === 'wall' || activeTool === 'door' || activeTool === 'wall_erase'
-                ? 'vtt-accent-btn border-transparent font-semibold'
-                : 'vtt-canvas vtt-border'
-            }`}
-            title="Desenhar muros e portas alinhados ao mapa (W)"
-          >
-            <BrickWall className="w-3.5 h-3.5" />
-            Muros
-          </button>
+            <button
+              type="button"
+              onClick={() =>
+                setActiveTool((t) =>
+                  t === 'wall' || t === 'door' || t === 'wall_erase' ? 'move' : 'wall'
+                )
+              }
+              className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTool === 'wall' || activeTool === 'door' || activeTool === 'wall_erase'
+                  ? 'vtt-accent-btn border-transparent font-semibold'
+                  : 'vtt-canvas vtt-border'
+              }`}
+              title="Desenhar muros e portas alinhados ao mapa (W)"
+            >
+              <BrickWall className="w-3.5 h-3.5" />
+              Muros
+            </button>
 
-          <button
-            type="button"
-            onClick={() => void handleFogToggle()}
-            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeScene?.fogEnabled
-                ? 'vtt-accent-btn border-transparent font-semibold'
-                : 'vtt-canvas vtt-border'
-            }`}
-            title="Ligar/desligar Névoa de Guerra"
-          >
-            <CloudFog className="w-3.5 h-3.5" />
-            {activeScene?.fogEnabled ? 'Névoa ON' : 'Névoa'}
-          </button>
+            <button
+              type="button"
+              onClick={() => void handleFogToggle()}
+              className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeScene?.fogEnabled
+                  ? 'vtt-accent-btn border-transparent font-semibold'
+                  : 'vtt-canvas vtt-border'
+              }`}
+              title="Ligar/desligar Névoa de Guerra"
+            >
+              <CloudFog className="w-3.5 h-3.5" />
+              {activeScene?.fogEnabled ? 'Névoa ON' : 'Névoa'}
+            </button>
+          </div>
 
-          <button
-            type="button"
-            onClick={() => setActiveTool((t) => (t === 'ruler' ? 'move' : 'ruler'))}
-            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTool === 'ruler'
-                ? 'vtt-accent-btn border-transparent font-semibold'
-                : 'vtt-canvas vtt-border'
-            }`}
-            title="Régua rápida (R)"
-          >
-            <Ruler className="w-3.5 h-3.5" />
-            Régua
-          </button>
+          <span className="h-5 w-px vtt-border bg-current opacity-20" />
 
-          {activeScene && (
-            <div className="relative flex items-center">
-              <button
-                type="button"
-                onClick={() =>
-                  void handleGridUpdate({
-                    ...activeScene.grid,
-                    enabled: !activeScene.grid.enabled,
-                  })
+          {/* Group B: Tactical Utilities & 3D Confrontation */}
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setActiveTool((t) => (t === 'ruler' ? 'move' : 'ruler'))}
+              className={`px-2 py-1.5 text-xs border flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                activeTool === 'ruler'
+                  ? 'vtt-accent-btn border-transparent font-semibold'
+                  : 'vtt-canvas vtt-border'
+              }`}
+              title="Régua de distância (R)"
+            >
+              <Ruler className="w-3.5 h-3.5" />
+              <span className="hidden xl:inline">Régua</span>
+            </button>
+
+            {activeScene && (
+              <div className="relative flex items-center">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleGridUpdate({
+                      ...activeScene.grid,
+                      enabled: !activeScene.grid.enabled,
+                    })
+                  }
+                  className={`px-2 py-1.5 text-xs border flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                    activeScene.grid.enabled
+                      ? 'vtt-accent-btn border-transparent font-semibold'
+                      : 'vtt-canvas vtt-border'
+                  }`}
+                  title="Ligar/desligar Grid (G)"
+                >
+                  <Grid className="w-3.5 h-3.5" />
+                  <span className="hidden xl:inline">Grid</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowGridPopover((v) => !v);
+                    setShowPlayerViewPopover(false);
+                  }}
+                  className="px-1.5 py-1.5 text-xs border border-l-0 vtt-border vtt-canvas hover:opacity-80"
+                  title="Calibrar escala do grid"
+                  aria-label="Calibrar grid"
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                </button>
+
+                {showGridPopover && (
+                  <div className="absolute top-11 left-0 w-72 vtt-surface border p-4 shadow-xl space-y-3 z-40">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-bold font-typewriter">Calibração de Grid</p>
+                      <button
+                        type="button"
+                        onClick={() => setShowGridPopover(false)}
+                        className="text-[11px] vtt-muted"
+                      >
+                        Fechar
+                      </button>
+                    </div>
+
+                    <label className="block space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span>Tamanho do quadrado</span>
+                        <span className="tabular-nums">{activeScene.grid.cellSizePx}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={24}
+                        max={160}
+                        value={activeScene.grid.cellSizePx}
+                        onChange={(e) =>
+                          void handleGridUpdate({
+                            ...activeScene.grid,
+                            enabled: true,
+                            cellSizePx: Number(e.target.value),
+                          })
+                        }
+                        className="w-full"
+                      />
+                    </label>
+
+                    <label className="block space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span>Opacidade das linhas</span>
+                        <span className="tabular-nums">
+                          {Math.round(activeScene.grid.opacity * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.1}
+                        max={0.9}
+                        step={0.05}
+                        value={activeScene.grid.opacity}
+                        onChange={(e) =>
+                          void handleGridUpdate({
+                            ...activeScene.grid,
+                            opacity: Number(e.target.value),
+                          })
+                        }
+                        className="w-full"
+                      />
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <label className="space-y-1">
+                        <span className="text-[11px] vtt-muted">Escala / quadrado</span>
+                        <input
+                          type="number"
+                          step={0.5}
+                          min={0.5}
+                          value={activeScene.grid.unitValue}
+                          onChange={(e) =>
+                            void handleGridUpdate({
+                              ...activeScene.grid,
+                              unitValue: Math.max(0.5, Number(e.target.value)),
+                            })
+                          }
+                          className="w-full px-2 py-1 border vtt-border vtt-canvas tabular-nums"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-[11px] vtt-muted">Unidade</span>
+                        <input
+                          type="text"
+                          maxLength={8}
+                          value={activeScene.grid.unitLabel}
+                          onChange={(e) =>
+                            void handleGridUpdate({
+                              ...activeScene.grid,
+                              unitLabel: e.target.value || 'm',
+                            })
+                          }
+                          className="w-full px-2 py-1 border vtt-border vtt-canvas"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => void handleShakePulse()}
+              className="px-2 py-1.5 text-xs border vtt-border vtt-canvas hover:opacity-80 flex items-center gap-1 whitespace-nowrap shrink-0"
+              title="Disparar tremor de impacto na mesa e na TV"
+            >
+              <Activity className="w-3.5 h-3.5 vtt-accent-text" />
+              <span className="hidden xl:inline">Tremor</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (activeDuel) {
+                  notify('O Modo Duelo 3D já está ativo na mesa.');
+                  return;
                 }
-                className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                  activeScene.grid.enabled
-                    ? 'vtt-accent-btn border-transparent font-semibold'
-                    : 'vtt-canvas vtt-border'
-                }`}
-                title="Ligar/desligar Grid (G)"
-              >
-                <Grid className="w-3.5 h-3.5" />
-                Grid
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowGridPopover((v) => !v)}
-                className="px-1.5 py-1.5 text-xs border border-l-0 vtt-border vtt-canvas hover:opacity-80"
-                title="Calibrar escala do grid"
-                aria-label="Calibrar grid"
-              >
-                <SlidersHorizontal className="w-3.5 h-3.5" />
-              </button>
-
-              {showGridPopover && (
-                <div className="absolute top-11 left-0 w-72 vtt-surface border p-4 shadow-xl space-y-3 z-40">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-bold font-typewriter">Calibração de Grid</p>
-                    <button
-                      type="button"
-                      onClick={() => setShowGridPopover(false)}
-                      className="text-[11px] vtt-muted"
-                    >
-                      Fechar
-                    </button>
-                  </div>
-
-                  <label className="block space-y-1 text-xs">
-                    <div className="flex justify-between">
-                      <span>Tamanho do quadrado</span>
-                      <span className="tabular-nums">{activeScene.grid.cellSizePx}px</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={24}
-                      max={160}
-                      value={activeScene.grid.cellSizePx}
-                      onChange={(e) =>
-                        void handleGridUpdate({
-                          ...activeScene.grid,
-                          enabled: true,
-                          cellSizePx: Number(e.target.value),
-                        })
-                      }
-                      className="w-full"
-                    />
-                  </label>
-
-                  <label className="block space-y-1 text-xs">
-                    <div className="flex justify-between">
-                      <span>Opacidade das linhas</span>
-                      <span className="tabular-nums">
-                        {Math.round(activeScene.grid.opacity * 100)}%
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0.1}
-                      max={0.9}
-                      step={0.05}
-                      value={activeScene.grid.opacity}
-                      onChange={(e) =>
-                        void handleGridUpdate({
-                          ...activeScene.grid,
-                          opacity: Number(e.target.value),
-                        })
-                      }
-                      className="w-full"
-                    />
-                  </label>
-
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <label className="space-y-1">
-                      <span className="text-[11px] vtt-muted">Escala / quadrado</span>
-                      <input
-                        type="number"
-                        step={0.5}
-                        min={0.5}
-                        value={activeScene.grid.unitValue}
-                        onChange={(e) =>
-                          void handleGridUpdate({
-                            ...activeScene.grid,
-                            unitValue: Math.max(0.5, Number(e.target.value)),
-                          })
-                        }
-                        className="w-full px-2 py-1 border vtt-border vtt-canvas tabular-nums"
-                      />
-                    </label>
-                    <label className="space-y-1">
-                      <span className="text-[11px] vtt-muted">Unidade</span>
-                      <input
-                        type="text"
-                        maxLength={8}
-                        value={activeScene.grid.unitLabel}
-                        onChange={(e) =>
-                          void handleGridUpdate({
-                            ...activeScene.grid,
-                            unitLabel: e.target.value || 'm',
-                          })
-                        }
-                        className="w-full px-2 py-1 border vtt-border vtt-canvas"
-                      />
-                    </label>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          <button
-            type="button"
-            onClick={() => void handleShakePulse()}
-            className="px-2.5 py-1.5 text-xs border vtt-border vtt-canvas hover:opacity-80 flex items-center gap-1 whitespace-nowrap shrink-0"
-            title="Disparar tremor de impacto na mesa e na TV"
-          >
-            <Activity className="w-3.5 h-3.5 vtt-accent-text" />
-            Tremor
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (activeDuel) {
-                notify('O Modo Duelo 3D já está ativo na mesa.');
-                return;
-              }
-              const characterTokens = (activeScene?.tokens || []).filter(
-                (t) => !t.layerKind || t.layerKind === 'token'
-              );
-              if (characterTokens.length === 2) {
-                setDuelSetupPair({
-                  tokenA: characterTokens[0],
-                  tokenB: characterTokens[1],
-                });
-                return;
-              }
-              setActiveTool((t) => (t === 'duel' ? 'move' : 'duel'));
-            }}
-            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTool === 'duel' || activeDuel
-                ? 'bg-amber-700 text-white border-amber-500 font-semibold'
-                : 'vtt-canvas vtt-border hover:border-amber-500/60'
-            }`}
-            title="Modo Confronto Direto / Duelo 3D (D) — selecione 2 tokens para iniciar combate 3D"
-          >
-            <Swords className="w-3.5 h-3.5 text-amber-400" />
-            Confronto 3D
-          </button>
+                const characterTokens = (activeScene?.tokens || []).filter(
+                  (t) => !t.layerKind || t.layerKind === 'token'
+                );
+                if (characterTokens.length === 2) {
+                  setDuelSetupPair({
+                    tokenA: characterTokens[0],
+                    tokenB: characterTokens[1],
+                  });
+                  return;
+                }
+                setActiveTool((t) => (t === 'duel' ? 'move' : 'duel'));
+              }}
+              className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                activeTool === 'duel' || activeDuel
+                  ? 'bg-amber-700 text-white border-amber-500 font-semibold'
+                  : 'vtt-canvas vtt-border hover:border-amber-500/60'
+              }`}
+              title="Modo Confronto Direto / Duelo 3D (D) — ou selecione 2 tokens com a caixa e clique com botão direito"
+            >
+              <Swords className="w-3.5 h-3.5 text-amber-400" />
+              Duelo 3D
+            </button>
+          </div>
         </div>
 
-        {/* Zone 3: QR Room + Primary CTA (Second Screen) */}
+        {/* Zone 3: Player View / Backstage Control + QR Room + Primary CTA (Second Screen) */}
         <div className="flex items-center gap-2 shrink-0">
+          {/* "Visão dos Players" (Section Pinning & Backstage Improv Control) */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                setShowPlayerViewPopover((v) => !v);
+                setShowGridPopover(false);
+              }}
+              className={`px-2.5 py-2 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                isPlayerScenePinned || currentPlayerViewMode !== 'scene'
+                  ? 'bg-amber-700/90 text-white border-amber-500 font-semibold'
+                  : 'vtt-canvas vtt-border hover:opacity-90'
+              }`}
+              title="Controlar o que os Players veem na TV/Celular e ativar Modo Bastidores para editar cenas futuras sem interromper o jogo"
+            >
+              {isPlayerScenePinned ? (
+                <Lock className="w-3.5 h-3.5 text-amber-300" />
+              ) : (
+                <Monitor className="w-3.5 h-3.5 vtt-accent-text" />
+              )}
+              <span className="hidden sm:inline">
+                {isPlayerScenePinned
+                  ? 'Bastidores ON'
+                  : currentPlayerViewMode === 'clues'
+                  ? 'Players: Pistas'
+                  : currentPlayerViewMode === 'dice'
+                  ? 'Players: Dados'
+                  : currentPlayerViewMode === 'standby'
+                  ? 'Players: Interlúdio'
+                  : 'Visão dos Players'}
+              </span>
+            </button>
+
+            {showPlayerViewPopover && (
+              <div className="absolute top-11 right-0 w-80 vtt-surface border vtt-border p-4 shadow-2xl space-y-4 z-50">
+                <div className="flex items-center justify-between border-b vtt-border pb-2.5">
+                  <div>
+                    <p className="text-xs font-bold font-typewriter">
+                      Controle da Visão dos Players
+                    </p>
+                    <p className="text-[11px] vtt-muted">
+                      No ar agora: <strong className="font-semibold">{liveProjectedSceneName}</strong>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowPlayerViewPopover(false)}
+                    className="text-[11px] vtt-muted hover:opacity-100"
+                  >
+                    Fechar
+                  </button>
+                </div>
+
+                {/* 1. Backstage Mode (Congelar / Fixar Cena nos Players) */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold">
+                      Modo Bastidores (Improviso)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !isPlayerScenePinned;
+                        setIsPlayerScenePinned(next);
+                        if (next && activeScene) {
+                          setGmPreviewSceneId(activeScene.id);
+                          notify(
+                            `Modo Bastidores ativado: os players continuam vendo "${liveProjectedSceneName}" enquanto você edita livremente.`
+                          );
+                        } else if (!next && activeScene) {
+                          void handleSelectScene(activeScene, true);
+                        }
+                      }}
+                      className={`px-2.5 py-1 text-[11px] font-semibold border flex items-center gap-1 ${
+                        isPlayerScenePinned
+                          ? 'bg-amber-700 text-white border-amber-500'
+                          : 'vtt-canvas vtt-border vtt-muted'
+                      }`}
+                    >
+                      {isPlayerScenePinned ? (
+                        <>
+                          <Lock className="w-3 h-3" />
+                          Fixado
+                        </>
+                      ) : (
+                        <>
+                          <Unlock className="w-3 h-3" />
+                          Ao Vivo
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <p className="text-[11px] vtt-muted leading-relaxed">
+                    Quando <strong>Fixado</strong>, você pode trocar de cena ou preparar futuros mapas, tokens e muros sem alterar a tela dos jogadores.
+                  </p>
+                  {isPlayerScenePinned && activeScene && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleSelectScene(activeScene, true);
+                      }}
+                      className="w-full py-2 px-3 text-xs font-semibold vtt-accent-btn flex items-center justify-center gap-1.5"
+                    >
+                      <Monitor className="w-3.5 h-3.5" />
+                      Projetar "{activeScene.name}" nos Players Agora
+                    </button>
+                  )}
+                </div>
+
+                {/* 2. Section Displayed to Players (playerViewMode) */}
+                <div className="space-y-2 border-t vtt-border pt-3">
+                  <p className="text-xs font-semibold">
+                    Seção Exibida na Tela dos Players
+                  </p>
+                  <p className="text-[11px] vtt-muted">
+                    Escolha o que a TV e os celulares exibem em destaque:
+                  </p>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(
+                      [
+                        ['scene', 'Cena / Mapa', ImageIcon],
+                        ['clues', 'Quadro de Pistas', BookOpen],
+                        ['dice', 'Rolagens & Dados', Dices],
+                        ['standby', 'Tela de Interlúdio', Sparkles],
+                      ] as const
+                    ).map(([modeId, label, Icon]) => {
+                      const active = currentPlayerViewMode === modeId;
+                      return (
+                        <button
+                          key={modeId}
+                          type="button"
+                          onClick={() => void handleChangePlayerViewMode(modeId)}
+                          className={`p-2 text-xs border flex items-center gap-1.5 text-left transition-colors ${
+                            active
+                              ? 'vtt-accent-btn border-transparent font-semibold'
+                              : 'vtt-canvas vtt-border vtt-muted hover:opacity-100'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
             onClick={() => setShowQrModal(true)}
@@ -1379,6 +1642,58 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Left/Center Stage Area */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
+          {/* Active Backstage / Forced Section Status Banner for GM */}
+          {(isPlayerScenePinned || currentPlayerViewMode !== 'scene') && (
+            <div className="px-4 py-1.5 border-b border-amber-500/40 bg-amber-950/60 text-amber-100 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <Lock className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <span className="truncate">
+                  {isPlayerScenePinned
+                    ? `Modo Bastidores: Players veem "${liveProjectedSceneName}" · Você está editando "${activeScene?.name || ''}"`
+                    : `Seção fixada nos Players: ${
+                        currentPlayerViewMode === 'clues'
+                          ? 'Quadro de Pistas & Wiki Pública'
+                          : currentPlayerViewMode === 'dice'
+                          ? 'Central de Dados & Rolagens'
+                          : 'Tela de Interlúdio / Preparação'
+                      }`}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {isPlayerScenePinned && activeScene && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSelectScene(activeScene, true)}
+                    className="px-2.5 py-0.5 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-[11px]"
+                  >
+                    Projetar esta cena
+                  </button>
+                )}
+                {isPlayerScenePinned && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsPlayerScenePinned(false);
+                      if (activeScene) void handleSelectScene(activeScene, true);
+                    }}
+                    className="px-2 py-0.5 border border-amber-400/50 hover:bg-amber-900/50 text-[11px]"
+                  >
+                    Sair dos Bastidores
+                  </button>
+                )}
+                {currentPlayerViewMode !== 'scene' && (
+                  <button
+                    type="button"
+                    onClick={() => void handleChangePlayerViewMode('scene')}
+                    className="px-2 py-0.5 border border-amber-400/50 hover:bg-amber-900/50 text-[11px]"
+                  >
+                    Voltar Players ao Mapa
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Contextual Brush & Text Sub-toolbar */}
           {(activeTool === 'brush' || activeTool === 'text') && (
             <div className="px-4 py-2 border-b vtt-border vtt-subtle flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
@@ -1649,7 +1964,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
             </div>
           )}
 
-          {/* Sovereign Tabletop Canvas wrapped with Dynamic Scene Visual FX */}
+          {/* Sovereign Tabletop Canvas & 3D Duel Arena wrapped with Dynamic Scene Visual FX */}
           <div className="flex-1 min-h-0 relative">
             <SceneEffectsStage
               effects={sceneEffects}
@@ -1662,6 +1977,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 scene={activeSceneForCanvas}
                 mode="gm"
                 activeTool={activeTool}
+                activeDuel={activeDuel}
                 fogBrushRadius={fogBrushRadius}
                 brushStyle={brushStyle}
                 brushColor={brushColor}
@@ -1674,6 +1990,26 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 onSaveToVault={handleSaveTokenToVault}
                 onRequestDuelPair={(a, b) => setDuelSetupPair({ tokenA: a, tokenB: b })}
                 onToolChange={setActiveTool}
+                onNotify={notify}
+              />
+
+              {/* Fullscreen 3D Turn-Based Confrontation / Duel Arena (inside SceneEffectsStage so CRT & FX apply!) */}
+              <DuelArena3DOverlay
+                campaignId={campaign.id}
+                uploadContext={uploadContext}
+                duel={activeDuel}
+                mode="gm"
+                onUpdateDuel={(next) => void handleUpdateDuel(next)}
+                onExecuteDuelAction={(params) => void handleExecuteDuelAction(params)}
+                onEndDuel={() => void handleEndDuel()}
+                onSaveSceneDuelBg={(bgUrl, bgMediaId, bgMediaKind) =>
+                  void handleUpdateSceneDuelConfig({
+                    ...sceneDuelConfig,
+                    bgUrl,
+                    bgMediaId,
+                    bgMediaKind,
+                  })
+                }
                 onNotify={notify}
               />
             </SceneEffectsStage>
@@ -1689,7 +2025,8 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           {/* Quick-Switch Scene Dock */}
           <div className="h-24 border-t vtt-border vtt-surface px-3 py-2 flex items-center gap-2.5 overflow-x-auto shrink-0">
             {scenes.map((scene) => {
-              const isActive = activeScene?.id === scene.id;
+              const isEditing = activeScene?.id === scene.id;
+              const isLiveOnPlayers = campaign.activeSceneId === scene.id;
               const thumb = sceneThumbs[scene.id];
               return (
                 <button
@@ -1697,10 +2034,10 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                   type="button"
                   onClick={() => void handleSelectScene(scene)}
                   className={`relative h-full w-36 shrink-0 border overflow-hidden text-left transition-transform active:scale-[0.98] ${
-                    isActive ? 'ring-2' : 'vtt-border opacity-80 hover:opacity-100'
+                    isEditing ? 'ring-2' : 'vtt-border opacity-80 hover:opacity-100'
                   }`}
                   style={
-                    isActive
+                    isEditing
                       ? {
                           borderColor: 'var(--accent-primary)',
                           boxShadow: '0 0 0 1px var(--accent-primary)',
@@ -1733,6 +2070,19 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                       )}
                     </div>
                   )}
+
+                  {/* Top status pill when Backstage Mode differentiates GM vs Players */}
+                  {isLiveOnPlayers && (
+                    <span className="absolute top-1 left-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-emerald-700/90 text-white">
+                      No Ar
+                    </span>
+                  )}
+                  {isPlayerScenePinned && isEditing && !isLiveOnPlayers && (
+                    <span className="absolute top-1 left-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-600/95 text-white">
+                      Bastidores
+                    </span>
+                  )}
+
                   <div className="absolute inset-x-0 bottom-0 px-2 py-1 bg-gradient-to-t from-black/85 via-black/55 to-transparent text-stone-100">
                     <p className="text-[11px] font-semibold truncate">{scene.name}</p>
                   </div>
@@ -2041,28 +2391,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         />
       )}
 
-      {/* Fullscreen 3D Turn-Based Confrontation / Duel Arena */}
-      <DuelArena3DOverlay
-        campaignId={campaign.id}
-        uploadContext={uploadContext}
-        duel={activeDuel}
-        mode="gm"
-        onUpdateDuel={(next) => void handleUpdateDuel(next)}
-        onExecuteDuelAction={(params) => void handleExecuteDuelAction(params)}
-        onEndDuel={() => void handleEndDuel()}
-        onSaveSceneDuelBg={(bgUrl, bgMediaId, bgMediaKind) =>
-          void handleUpdateSceneDuelConfig({
-            ...sceneDuelConfig,
-            bgUrl,
-            bgMediaId,
-            bgMediaKind,
-          })
-        }
-        onNotify={notify}
-      />
-
       {/* Dynamic Tumbling Dice Roll Animation */}
       <DiceRollOverlay roll={activeRollAnim} onComplete={clearRollAnim} position="bottom-right" />
     </div>
   );
 }
+

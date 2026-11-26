@@ -6,6 +6,7 @@ import {
   EyeOff,
   Flame,
   Hammer,
+  HeartPulse,
   ImagePlus,
   Lock,
   Music,
@@ -168,6 +169,8 @@ export function DuelSetupModal({
   const [hidePlayerActionsOnScreen, setHidePlayerActionsOnScreen] = useState(true);
   // Default to FALSE: names above tokens are hidden for players unless enabled
   const [showCombatantNamesOnScreen, setShowCombatantNamesOnScreen] = useState(false);
+  // Default to FALSE: HP bars and combat info on visualization/player screen are hidden unless enabled
+  const [showCombatInfoOnScreen, setShowCombatInfoOnScreen] = useState(false);
 
   const [playerThumb, setPlayerThumb] = useState('');
   const [npcThumb, setNpcThumb] = useState('');
@@ -342,6 +345,7 @@ export function DuelSetupModal({
       musicTrackId,
       hidePlayerActionsOnScreen,
       showCombatantNamesOnScreen,
+      showCombatInfoOnScreen,
       attackSfxMap,
       player: previewPlayerCombatant,
       npc: previewNpcCombatant,
@@ -821,32 +825,51 @@ export function DuelSetupModal({
 
           {/* Screen Visibility & Privacy Options */}
           <div className="border vtt-border vtt-canvas p-3 space-y-2.5">
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={hidePlayerActionsOnScreen}
-                onChange={(e) => setHidePlayerActionsOnScreen(e.target.checked)}
-              />
-              <span>
-                <strong>
-                  Visualização limpa para Jogadores (apenas arena 3D, personagens e efeitos reativos)
-                </strong>
-                <span className="block text-[11px] vtt-muted">
-                  Ativado por padrão: os jogadores nunca veem barras de vida nem menus de ataques.
-                </span>
-              </span>
-            </label>
+            <p className="text-[11px] font-bold font-typewriter uppercase tracking-wider vtt-muted">
+              Visão do Duelo na Tela de Visualização (TV) & Players
+            </p>
 
-            <label className="flex items-center gap-2 cursor-pointer pt-1 border-t vtt-border">
+            <label className="flex items-center gap-2 cursor-pointer">
               <input
                 type="checkbox"
                 checked={showCombatantNamesOnScreen}
                 onChange={(e) => setShowCombatantNamesOnScreen(e.target.checked)}
               />
               <span>
-                <strong>Mostrar nomes em cima dos personagens para os jogadores</strong>
+                <strong>Exibir Nomes na Tela de Visualização e Players</strong>
                 <span className="block text-[11px] vtt-muted">
-                  Desabilitado por padrão (você também pode ligar/desligar a qualquer momento durante o duelo).
+                  Quando ativado, os nomes dos combatentes aparecem em destaque acima dos personagens.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 cursor-pointer pt-1.5 border-t vtt-border">
+              <input
+                type="checkbox"
+                checked={showCombatInfoOnScreen}
+                onChange={(e) => {
+                  setShowCombatInfoOnScreen(e.target.checked);
+                  if (e.target.checked) setShowCombatantNamesOnScreen(true);
+                }}
+              />
+              <span>
+                <strong>Exibir Informações de Vida (PV) e Status de Combate na Tela</strong>
+                <span className="block text-[11px] vtt-muted">
+                  Quando ativado, barras de vida, rodada, turno atual e resumo de combate aparecem na Tela de Visualização e Players.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-center gap-2 cursor-pointer pt-1.5 border-t vtt-border">
+              <input
+                type="checkbox"
+                checked={!hidePlayerActionsOnScreen}
+                onChange={(e) => setHidePlayerActionsOnScreen(!e.target.checked)}
+              />
+              <span>
+                <strong>Exibir Menu de Ataques / Ações do Jogador na Tela</strong>
+                <span className="block text-[11px] vtt-muted">
+                  Desativado por padrão (arena limpa). Ative se quiser mostrar as opções de golpes na tela.
                 </span>
               </span>
             </label>
@@ -936,14 +959,14 @@ export function DuelArena3DOverlay({
       setVisibilityPhase((prev) =>
         prev === 'hidden' || prev === 'exiting' ? 'entering' : 'active'
       );
-      const t = window.setTimeout(() => setVisibilityPhase('active'), 40);
+      const t = window.setTimeout(() => setVisibilityPhase('active'), 45);
       return () => window.clearTimeout(t);
     } else if (renderedDuel) {
       setVisibilityPhase('exiting');
       const t = window.setTimeout(() => {
         setVisibilityPhase('hidden');
         setRenderedDuel(null);
-      }, 420);
+      }, 620);
       return () => window.clearTimeout(t);
     }
   }, [duel]);
@@ -1873,11 +1896,17 @@ export function DuelArena3DOverlay({
     renderedDuel.bgMediaKind || detectSceneMediaKind(renderedDuel.bgUrl || bgResolvedUrl);
 
   const showBottomCommandDock =
-    mode === 'gm' || (!renderedDuel.hidePlayerActionsOnScreen && mode === 'player');
+    mode === 'gm' || !renderedDuel.hidePlayerActionsOnScreen;
 
-  // Names above characters: always visible to GM, and visible to Players/TV when showCombatantNamesOnScreen is enabled
+  // Names above characters: always visible to GM, and visible to Players/TV when showCombatantNamesOnScreen OR showCombatInfoOnScreen is enabled
   const shouldShowNamesAboveTokens =
-    mode === 'gm' || Boolean(renderedDuel.showCombatantNamesOnScreen);
+    mode === 'gm' ||
+    Boolean(renderedDuel.showCombatantNamesOnScreen) ||
+    Boolean(renderedDuel.showCombatInfoOnScreen);
+
+  // Public HP & Combat Info on Visualization (TV) & Player screens when enabled by GM
+  const shouldShowPublicCombatInfo =
+    mode !== 'gm' && Boolean(renderedDuel.showCombatInfoOnScreen);
 
   const cursorStyle =
     mode !== 'gm'
@@ -1889,6 +1918,14 @@ export function DuelArena3DOverlay({
   const currentAttackSfxMap =
     renderedDuel.attackSfxMap || loadCampaignAttackSfx(campaignId);
 
+  // Seamless zoom transition scale & opacity when turning Duel Mode ON or OFF
+  const transitionStageScale =
+    visibilityPhase === 'entering'
+      ? duelStageScale * 0.76
+      : visibilityPhase === 'exiting'
+        ? duelStageScale * 1.24
+        : duelStageScale;
+
   return (
     <div
       ref={arenaRef}
@@ -1896,24 +1933,46 @@ export function DuelArena3DOverlay({
       onPointerMove={handleArenaPointerMove}
       onPointerUp={handleArenaPointerUp}
       onPointerCancel={handleArenaPointerUp}
-      className={`fixed inset-0 z-40 overflow-hidden select-none touch-none bg-stone-950 text-stone-100 transition-all duration-400 ease-out ${cursorStyle} ${
+      style={{
+        transition: 'opacity 580ms cubic-bezier(0.16, 1, 0.3, 1)',
+      }}
+      className={`fixed inset-0 z-40 overflow-hidden select-none touch-none bg-stone-950 text-stone-100 ${cursorStyle} ${
         visibilityPhase === 'entering' || visibilityPhase === 'exiting'
-          ? 'opacity-0 scale-105'
-          : 'opacity-100 scale-100'
+          ? 'opacity-0'
+          : 'opacity-100'
       }`}
     >
-      {/* PRE-ESTABLISHED FIXED 1280x720 3D DUEL STAGE (Immune to Browser Ctrl+Zoom!) */}
+      {/* PRE-ESTABLISHED FIXED 1280x720 3D DUEL STAGE (Immune to Browser Ctrl+Zoom + Seamless Zoom In/Out!) */}
       <div className="absolute inset-0 flex items-center justify-center overflow-hidden pointer-events-none">
         <div
           ref={fixedDuelStageRef}
           style={{
             width: `${DUEL_STAGE_WIDTH}px`,
             height: `${DUEL_STAGE_HEIGHT}px`,
-            transform: `scale(${duelStageScale})`,
+            transform: `scale(${transitionStageScale})`,
             transformOrigin: 'center center',
+            transition: 'transform 620ms cubic-bezier(0.16, 1, 0.3, 1)',
           }}
           className="relative overflow-hidden shrink-0 pointer-events-auto"
         >
+          {/* Public Combat Banner on Visualization (TV) & Player screens when showCombatInfoOnScreen is active */}
+          {shouldShowPublicCombatInfo && (
+            <div className="absolute top-5 left-1/2 -translate-x-1/2 z-30 px-5 py-2 bg-stone-950/92 border border-stone-700/90 shadow-2xl flex flex-col items-center gap-0.5 pointer-events-none min-w-[340px]">
+              <div className="flex items-center gap-2 text-xs font-bold font-typewriter uppercase tracking-widest">
+                <span className="text-stone-400">Rodada {renderedDuel.round}</span>
+                <span className="text-stone-600">·</span>
+                <span style={{ color: isPlayerTurn ? preset.accentColor : '#f87171' }}>
+                  Turno de {isPlayerTurn ? renderedDuel.player.name : renderedDuel.npc.name}
+                </span>
+              </div>
+              {renderedDuel.lastActionSummary && (
+                <p className="text-[11px] text-stone-300 font-typewriter truncate max-w-[440px]">
+                  {renderedDuel.lastActionSummary}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* LAYER 1 (z-10): 3D Environment Layer (Skybox Cyclorama + Tilted 3D Arena Floor Plane) */}
           {/* Keeping the 3D floor in its own layer guarantees characters NEVER clip or sink beneath the floor! */}
           <div
@@ -2088,6 +2147,36 @@ export function DuelArena3DOverlay({
                     boxShadow: '0 14px 28px rgba(0,0,0,0.95)',
                   }}
                 />
+
+                {/* PUBLIC Visualization / Player Vida (PV) & Combat Info Box (when showCombatInfoOnScreen is active) */}
+                {shouldShowPublicCombatInfo && (
+                  <div className="absolute top-full mt-1.5 w-full bg-stone-950/92 border border-emerald-700/80 p-2.5 shadow-2xl space-y-1.5 z-30 pointer-events-none">
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-xs font-bold font-typewriter text-stone-100 truncate">
+                        {renderedDuel.player.name}
+                      </span>
+                      <span className="text-xs font-bold tabular-nums text-emerald-400">
+                        {renderedDuel.player.hpCurrent}/{renderedDuel.player.hpMax} PV
+                      </span>
+                    </div>
+                    <div className="w-full h-2 bg-stone-800 overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-500 transition-all duration-300"
+                        style={{
+                          width: `${Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              (renderedDuel.player.hpCurrent /
+                                Math.max(1, renderedDuel.player.hpMax)) *
+                                100
+                            )
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
 
                 {/* GM-ONLY Manual Vida (PV) Control Box — Positioned below the pedestal so both pedestals stay on the exact same floor height! */}
                 {mode === 'gm' && (
@@ -2291,6 +2380,35 @@ export function DuelArena3DOverlay({
                   }}
                 />
 
+                {/* PUBLIC Visualization / Player Vida (PV) & Combat Info Box (when showCombatInfoOnScreen is active) */}
+                {shouldShowPublicCombatInfo && (
+                  <div className="absolute top-full mt-1.5 w-full bg-stone-950/92 border border-red-800/80 p-2.5 shadow-2xl space-y-1.5 z-30 pointer-events-none">
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-xs font-bold font-typewriter text-stone-100 truncate">
+                        {renderedDuel.npc.name}
+                      </span>
+                      <span className="text-xs font-bold tabular-nums text-red-400">
+                        {renderedDuel.npc.hpCurrent}/{renderedDuel.npc.hpMax} PV
+                      </span>
+                    </div>
+                    <div className="w-full h-2 bg-stone-800 overflow-hidden">
+                      <div
+                        className="h-full bg-red-600 transition-all duration-300"
+                        style={{
+                          width: `${Math.max(
+                            0,
+                            Math.min(
+                              100,
+                              (renderedDuel.npc.hpCurrent / Math.max(1, renderedDuel.npc.hpMax)) *
+                                100
+                            )
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {/* GM-ONLY Manual Vida (PV) Control Box */}
                 {mode === 'gm' && (
                   <div
@@ -2435,7 +2553,7 @@ export function DuelArena3DOverlay({
         </div>
       </div>
 
-      {/* LAYER 4 (z-30): GM-ONLY Top Control Bar (Players & TV have 100% pure unobstructed 3D Arena view!) */}
+      {/* LAYER 4 (z-30): GM-ONLY Top Control Bar */}
       {mode === 'gm' && onUpdateDuel && (
         <header
           data-gm-ui="true"
@@ -2771,56 +2889,72 @@ export function DuelArena3DOverlay({
               </label>
             )}
 
-            {/* Toggle Combatant Names Above Characters on Players/TV Screen (Disabled by Default) */}
-            <button
-              type="button"
-              onClick={() =>
-                onUpdateDuel({
-                  ...renderedDuel,
-                  showCombatantNamesOnScreen: !renderedDuel.showCombatantNamesOnScreen,
-                })
-              }
-              className={`px-2 py-1 text-[11px] border flex items-center gap-1 ${
-                renderedDuel.showCombatantNamesOnScreen
-                  ? 'bg-emerald-950/80 border-emerald-600 text-emerald-200'
-                  : 'bg-stone-900 border-stone-700 text-stone-300'
-              }`}
-              title="Mostrar ou ocultar os nomes em cima dos personagens na tela dos jogadores (desabilitado por padrão)"
-            >
-              <Tag className="w-3.5 h-3.5" />
-              <span className="hidden lg:inline">
-                {renderedDuel.showCombatantNamesOnScreen ? 'Nomes TV: ON' : 'Nomes TV: OFF'}
-              </span>
-            </button>
+            {/* Segmented Screen Vision Toggles (Nomes TV · Vida/Combate TV · Golpes TV) */}
+            <div className="flex items-center bg-stone-900 border border-stone-700 p-0.5 gap-0.5">
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateDuel({
+                    ...renderedDuel,
+                    showCombatantNamesOnScreen: !renderedDuel.showCombatantNamesOnScreen,
+                  })
+                }
+                className={`px-2 py-1 text-[11px] flex items-center gap-1 transition-colors ${
+                  renderedDuel.showCombatantNamesOnScreen || renderedDuel.showCombatInfoOnScreen
+                    ? 'bg-emerald-800 text-white font-semibold'
+                    : 'text-stone-300 hover:bg-stone-800'
+                }`}
+                title="Exibir ou ocultar nomes dos personagens na Tela de Visualização e Players"
+              >
+                <Tag className="w-3 h-3" />
+                <span>Nomes</span>
+              </button>
 
-            {/* Toggle Player Attack Menu Visibility (Default: Disabled / Hidden) */}
-            <button
-              type="button"
-              onClick={() =>
-                onUpdateDuel({
-                  ...renderedDuel,
-                  hidePlayerActionsOnScreen: !renderedDuel.hidePlayerActionsOnScreen,
-                })
-              }
-              className={`px-2 py-1 text-[11px] border flex items-center gap-1 ${
-                renderedDuel.hidePlayerActionsOnScreen
-                  ? 'bg-stone-900 border-stone-700 text-stone-300'
-                  : 'bg-emerald-950/80 border-emerald-600 text-emerald-200'
-              }`}
-              title="Por padrão os jogadores só veem a arena 3D e os tokens. Clique se quiser mostrar os ataques para o jogador no celular."
-            >
-              {renderedDuel.hidePlayerActionsOnScreen ? (
-                <>
-                  <EyeOff className="w-3.5 h-3.5" />
-                  <span className="hidden lg:inline">Só Arena</span>
-                </>
-              ) : (
-                <>
-                  <Eye className="w-3.5 h-3.5" />
-                  <span className="hidden lg:inline">Menu Player ON</span>
-                </>
-              )}
-            </button>
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateDuel({
+                    ...renderedDuel,
+                    showCombatInfoOnScreen: !renderedDuel.showCombatInfoOnScreen,
+                    showCombatantNamesOnScreen: !renderedDuel.showCombatInfoOnScreen
+                      ? true
+                      : renderedDuel.showCombatantNamesOnScreen,
+                  })
+                }
+                className={`px-2 py-1 text-[11px] flex items-center gap-1 transition-colors ${
+                  renderedDuel.showCombatInfoOnScreen
+                    ? 'bg-emerald-800 text-white font-semibold'
+                    : 'text-stone-300 hover:bg-stone-800'
+                }`}
+                title="Exibir ou ocultar barras de Vida (PV), rodada e status de combate na Tela de Visualização e Players"
+              >
+                <HeartPulse className="w-3 h-3" />
+                <span>Vida & Combate</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() =>
+                  onUpdateDuel({
+                    ...renderedDuel,
+                    hidePlayerActionsOnScreen: !renderedDuel.hidePlayerActionsOnScreen,
+                  })
+                }
+                className={`px-2 py-1 text-[11px] flex items-center gap-1 transition-colors ${
+                  !renderedDuel.hidePlayerActionsOnScreen
+                    ? 'bg-emerald-800 text-white font-semibold'
+                    : 'text-stone-300 hover:bg-stone-800'
+                }`}
+                title="Exibir ou ocultar o menu de ações/golpes na Tela de Visualização e Players"
+              >
+                {renderedDuel.hidePlayerActionsOnScreen ? (
+                  <EyeOff className="w-3 h-3" />
+                ) : (
+                  <Eye className="w-3 h-3" />
+                )}
+                <span>Golpes</span>
+              </button>
+            </div>
 
             <button
               type="button"

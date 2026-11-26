@@ -5,17 +5,23 @@ import {
   DoorOpen,
   Eye,
   EyeOff,
+  Heart,
+  HeartPulse,
   Image as ImageIcon,
   Lock,
   Maximize2,
+  Moon,
+  Skull,
   SlidersHorizontal,
   Swords,
   Trash2,
   Unlock,
   Upload,
+  X,
   Zap,
 } from 'lucide-react';
 import type {
+  ActiveDuelState,
   ActiveHandoutProjection,
   BrushPoint,
   BrushStyleId,
@@ -23,6 +29,7 @@ import type {
   LiveSceneSnapshot,
   SceneToken,
   SceneWall,
+  TokenVitalStatus,
 } from '../types/vtt';
 import {
   resolveMediaUrl,
@@ -51,6 +58,7 @@ interface TabletopCanvasProps {
   campaignId?: string;
   uploadContext?: CampaignUploadContext;
   scene: LiveSceneSnapshot | null;
+  activeDuel?: ActiveDuelState | null;
   mode: 'gm' | 'screen' | 'player';
   activeTool?: CanvasTool;
   fogBrushRadius?: number; // normalized 0.03 .. 0.18
@@ -104,6 +112,21 @@ interface ContextMenuState {
   tokenId: string;
   x: number;
   y: number;
+  isGroupMenu?: boolean;
+}
+
+interface MarqueeSelectionRect {
+  startNx: number;
+  startNy: number;
+  endNx: number;
+  endNy: number;
+}
+
+interface GroupDragState {
+  anchorTokenId: string;
+  startNx: number;
+  startNy: number;
+  initialPositions: Record<string, { x: number; y: number }>;
 }
 
 const REFERENCE_MAP_WIDTH = 1200;
@@ -167,6 +190,7 @@ export function TabletopCanvas({
   campaignId,
   uploadContext,
   scene,
+  activeDuel: activeDuelProp,
   mode,
   activeTool = 'move',
   fogBrushRadius = 0.08,
@@ -198,6 +222,9 @@ export function TabletopCanvas({
   const [localFog, setLocalFog] = useState<FogStroke[]>(scene?.fogStrokes || []);
   const [localWalls, setLocalWalls] = useState<SceneWall[]>(scene?.walls || []);
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
+  const [selectedTokenIds, setSelectedTokenIds] = useState<string[]>([]);
+  const [marqueeRect, setMarqueeRect] = useState<MarqueeSelectionRect | null>(null);
+  const [groupDragState, setGroupDragState] = useState<GroupDragState | null>(null);
   const [duelCandidateId, setDuelCandidateId] = useState<string | null>(null);
   const [draggingTokenId, setDraggingTokenId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
@@ -206,6 +233,26 @@ export function TabletopCanvas({
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [isDragOverFile, setIsDragOverFile] = useState(false);
   const [dragHoverCoords, setDragHoverCoords] = useState<{ nx: number; ny: number } | null>(null);
+
+  // Seamless camera zoom origin for transitioning into/out of 3D Duel Mode
+  const effectiveDuel = activeDuelProp !== undefined ? activeDuelProp : scene?.activeDuel || null;
+  const [duelZoomOrigin, setDuelZoomOrigin] = useState<{ x: number; y: number }>({ x: 0.5, y: 0.5 });
+
+  useEffect(() => {
+    if (!effectiveDuel) return;
+    const pTok = localTokens.find((t) => t.id === effectiveDuel.player.tokenId);
+    const nTok = localTokens.find((t) => t.id === effectiveDuel.npc.tokenId);
+    if (pTok && nTok) {
+      setDuelZoomOrigin({
+        x: Math.max(0.15, Math.min(0.85, (pTok.x + nTok.x) / 2)),
+        y: Math.max(0.15, Math.min(0.85, (pTok.y + nTok.y) / 2)),
+      });
+    } else if (pTok) {
+      setDuelZoomOrigin({ x: pTok.x, y: pTok.y });
+    } else if (nTok) {
+      setDuelZoomOrigin({ x: nTok.x, y: nTok.y });
+    }
+  }, [effectiveDuel, localTokens]);
 
   // Hit-flash ticker so hit recoil auto-clears cleanly after ~600ms
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -249,10 +296,10 @@ export function TabletopCanvas({
   const mapScale = 1;
 
   useEffect(() => {
-    if (!draggingTokenId && !resizingState) {
+    if (!draggingTokenId && !groupDragState && !resizingState) {
       setLocalTokens(scene?.tokens || []);
     }
-  }, [scene?.tokens, draggingTokenId, resizingState]);
+  }, [scene?.tokens, draggingTokenId, groupDragState, resizingState]);
 
   useEffect(() => {
     if (!isPaintingFogRef.current) {
@@ -342,7 +389,7 @@ export function TabletopCanvas({
     };
   }, []);
 
-  // Support Ctrl+V (paste image directly onto tabletop!) and Delete/Backspace for selected layer
+  // Support Ctrl+V (paste image directly onto tabletop!) and Delete/Backspace for selected layers
   useEffect(() => {
     if (mode !== 'gm') return;
 
@@ -375,9 +422,18 @@ export function TabletopCanvas({
       const target = e.target as HTMLElement | null;
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
       if (editingTextId) return;
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedTokenId) {
-        e.preventDefault();
-        handleDeleteToken(selectedTokenId);
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedTokenIds.length > 1) {
+          e.preventDefault();
+          handleDeleteSelectedTokens(selectedTokenIds);
+        } else if (selectedTokenId) {
+          e.preventDefault();
+          handleDeleteToken(selectedTokenId);
+        }
+      } else if (e.key === 'Escape') {
+        setSelectedTokenIds([]);
+        setSelectedTokenId(null);
+        setContextMenu(null);
       }
     }
 
@@ -442,6 +498,7 @@ export function TabletopCanvas({
       const next = [...localTokens, newLayer];
       setLocalTokens(next);
       setSelectedTokenId(newLayer.id);
+      setSelectedTokenIds([newLayer.id]);
       onToolChange?.('move');
       onTokensChange?.(next);
       onSaveToVault?.(newLayer);
@@ -630,6 +687,23 @@ export function TabletopCanvas({
     onWallsChange?.(next);
   }
 
+  function getTokensInsideMarquee(rect: MarqueeSelectionRect): string[] {
+    const minX = Math.min(rect.startNx, rect.endNx);
+    const maxX = Math.max(rect.startNx, rect.endNx);
+    const minY = Math.min(rect.startNy, rect.endNy);
+    const maxY = Math.max(rect.startNy, rect.endNy);
+    return localTokens
+      .filter(
+        (t) =>
+          t.layerKind !== 'brush' &&
+          t.x >= minX &&
+          t.x <= maxX &&
+          t.y >= minY &&
+          t.y <= maxY
+      )
+      .map((t) => t.id);
+  }
+
   function handleStagePointerDown(e: React.PointerEvent) {
     if (!scene) return;
     setContextMenu(null);
@@ -668,6 +742,7 @@ export function TabletopCanvas({
       const next = [...localTokens, newTextLayer];
       setLocalTokens(next);
       setSelectedTokenId(newTextLayer.id);
+      setSelectedTokenIds([newTextLayer.id]);
       setEditingTextId(newTextLayer.id);
       onTokensChange?.(next);
       onToolChange?.('move');
@@ -739,7 +814,23 @@ export function TabletopCanvas({
       return;
     }
 
+    // Windows Desktop-Style Marquee (Shape) Multi-Selection when dragging on empty map in Move mode
+    if (mode === 'gm' && activeTool === 'move') {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setMarqueeRect({
+        startNx: nx,
+        startNy: ny,
+        endNx: nx,
+        endNy: ny,
+      });
+      setSelectedTokenId(null);
+      setSelectedTokenIds([]);
+      setEditingTextId(null);
+      return;
+    }
+
     setSelectedTokenId(null);
+    setSelectedTokenIds([]);
     setEditingTextId(null);
   }
 
@@ -750,6 +841,26 @@ export function TabletopCanvas({
 
     if (ruler) {
       setRuler((prev) => (prev ? { ...prev, endX: px, endY: py } : null));
+      return;
+    }
+
+    // Active Windows Desktop-Style Marquee Box Selection
+    if (marqueeRect && mode === 'gm') {
+      const nextRect: MarqueeSelectionRect = {
+        ...marqueeRect,
+        endNx: nx,
+        endNy: ny,
+      };
+      setMarqueeRect(nextRect);
+      const dist = Math.hypot(
+        nextRect.endNx - nextRect.startNx,
+        nextRect.endNy - nextRect.startNy
+      );
+      if (dist > 0.01) {
+        const matched = getTokensInsideMarquee(nextRect);
+        setSelectedTokenIds(matched);
+        setSelectedTokenId(matched.length === 1 ? matched[0] : null);
+      }
       return;
     }
 
@@ -870,7 +981,27 @@ export function TabletopCanvas({
       return;
     }
 
-    // Active Token / Layer Dragging (broadcasts in real-time to Shared TV!)
+    // Active Multi-Token Group Dragging (broadcasts in real-time to Shared TV!)
+    if (groupDragState && mode === 'gm') {
+      const dx = nx - groupDragState.startNx;
+      const dy = ny - groupDragState.startNy;
+      const nextTokens = localTokens.map((t) => {
+        const init = groupDragState.initialPositions[t.id];
+        if (!init || t.locked) return t;
+        const clampedX = Math.max(0.01, Math.min(0.99, init.x + dx));
+        const clampedY = Math.max(0.01, Math.min(0.99, init.y + dy));
+        return {
+          ...t,
+          x: Number(clampedX.toFixed(4)),
+          y: Number(clampedY.toFixed(4)),
+        };
+      });
+      setLocalTokens(nextTokens);
+      onTokensLiveChange?.(nextTokens);
+      return;
+    }
+
+    // Active Single Token / Layer Dragging (broadcasts in real-time to Shared TV!)
     if (draggingTokenId && mode === 'gm') {
       const clampedX = Math.max(0.01, Math.min(0.99, nx - dragOffset.dx));
       const clampedY = Math.max(0.01, Math.min(0.99, ny - dragOffset.dy));
@@ -887,6 +1018,24 @@ export function TabletopCanvas({
   function handleStagePointerUp() {
     if (ruler) {
       setRuler(null);
+    }
+
+    if (marqueeRect) {
+      const dist = Math.hypot(
+        marqueeRect.endNx - marqueeRect.startNx,
+        marqueeRect.endNy - marqueeRect.startNy
+      );
+      if (dist > 0.01) {
+        const matched = getTokensInsideMarquee(marqueeRect);
+        setSelectedTokenIds(matched);
+        setSelectedTokenId(matched.length === 1 ? matched[0] : null);
+        if (matched.length === 2) {
+          onNotify?.(
+            '2 tokens selecionados! Arraste qualquer um para mover os dois juntos, ou clique com o botão direito neles para iniciar Modo Duelo 3D.'
+          );
+        }
+      }
+      setMarqueeRect(null);
     }
 
     if (brushDraft) {
@@ -956,6 +1105,11 @@ export function TabletopCanvas({
       onTokensChange?.(localTokens);
     }
 
+    if (groupDragState) {
+      setGroupDragState(null);
+      onTokensChange?.(localTokens);
+    }
+
     if (draggingTokenId) {
       setDraggingTokenId(null);
       onTokensChange?.(localTokens);
@@ -966,19 +1120,17 @@ export function TabletopCanvas({
     if (mode !== 'gm') return;
     if (e.button !== 0) return;
 
-    // 1. Direct Confrontation / Duel Mode Selection (clicking Token 1 then Token 2, or Shift+Click)
-    const isDuelSelection =
-      activeTool === 'duel' ||
-      Boolean(duelCandidateId) ||
-      (activeTool === 'move' && e.shiftKey && selectedTokenId && selectedTokenId !== token.id);
+    // 1. Explicit Duel Tool ('duel' tool in top toolbar or active duelCandidateId)
+    const isExplicitDuelTool = activeTool === 'duel' || Boolean(duelCandidateId);
 
-    if (isDuelSelection && token.layerKind !== 'text' && token.layerKind !== 'brush') {
+    if (isExplicitDuelTool && token.layerKind !== 'text' && token.layerKind !== 'brush') {
       e.stopPropagation();
       setContextMenu(null);
-      const firstId = duelCandidateId || (e.shiftKey ? selectedTokenId : null);
+      const firstId = duelCandidateId;
       if (!firstId || firstId === token.id) {
         setDuelCandidateId(token.id);
         setSelectedTokenId(token.id);
+        setSelectedTokenIds([token.id]);
         onNotify?.(`"${token.name}" selecionado para confronto. Agora clique no 2º token (oponente)!`);
         return;
       }
@@ -986,20 +1138,60 @@ export function TabletopCanvas({
       if (firstToken && firstToken.id !== token.id) {
         setDuelCandidateId(null);
         setSelectedTokenId(null);
+        setSelectedTokenIds([]);
         onRequestDuelPair?.(firstToken, token);
         return;
       }
     }
 
-    if (activeTool !== 'move' || e.shiftKey) return;
+    if (activeTool !== 'move') return;
     e.stopPropagation();
     setContextMenu(null);
     if (editingTextId && editingTextId !== token.id) {
       setEditingTextId(null);
     }
-    setSelectedTokenId(token.id);
-    if (token.locked) return;
+
+    // Ctrl / Cmd / Shift + Click toggles token in multi-selection without conflicting with Duel Mode!
+    if (e.ctrlKey || e.metaKey || e.shiftKey) {
+      const exists = selectedTokenIds.includes(token.id);
+      const nextIds = exists
+        ? selectedTokenIds.filter((id) => id !== token.id)
+        : [...selectedTokenIds, token.id];
+      setSelectedTokenIds(nextIds);
+      setSelectedTokenId(nextIds.length === 1 ? nextIds[0] : null);
+      if (nextIds.length === 2) {
+        onNotify?.(
+          '2 tokens selecionados! Clique com o botão direito em um deles para iniciar Modo Duelo 3D, ou arraste para mover juntos.'
+        );
+      }
+      return;
+    }
+
     const { nx, ny } = getRelativeCoords(e.clientX, e.clientY);
+
+    // If clicking a token that is already part of a multi-selection (>1 tokens), start group drag for all selected tokens!
+    if (selectedTokenIds.length > 1 && selectedTokenIds.includes(token.id)) {
+      if (token.locked) return;
+      const initialPositions: Record<string, { x: number; y: number }> = {};
+      for (const t of localTokens) {
+        if (selectedTokenIds.includes(t.id) && !t.locked) {
+          initialPositions[t.id] = { x: t.x, y: t.y };
+        }
+      }
+      mapBoxRef.current?.setPointerCapture(e.pointerId);
+      setGroupDragState({
+        anchorTokenId: token.id,
+        startNx: nx,
+        startNy: ny,
+        initialPositions,
+      });
+      return;
+    }
+
+    // Single token selection & drag
+    setSelectedTokenId(token.id);
+    setSelectedTokenIds([token.id]);
+    if (token.locked) return;
     setDragOffset({ dx: nx - token.x, dy: ny - token.y });
     mapBoxRef.current?.setPointerCapture(e.pointerId);
     setDraggingTokenId(token.id);
@@ -1032,12 +1224,21 @@ export function TabletopCanvas({
     e.preventDefault();
     e.stopPropagation();
     const { px: rawX, py: rawY } = getRelativeCoords(e.clientX, e.clientY);
-    const popW = 284;
-    const popH = 420;
+    const popW = 290;
+    const popH = 440;
     const x = Math.max(10, Math.min(mapBoxSize.width - popW - 10, rawX + 10));
     const y = Math.max(10, Math.min(mapBoxSize.height - popH - 10, rawY - 24));
+
+    // If right-clicking a token while 2 or more tokens are selected (and this token is in the selection),
+    // open the Multi-Selection & 3D Duel Context Menu!
+    if (selectedTokenIds.length >= 2 && selectedTokenIds.includes(token.id)) {
+      setContextMenu({ tokenId: token.id, x, y, isGroupMenu: true });
+      return;
+    }
+
     setSelectedTokenId(token.id);
-    setContextMenu({ tokenId: token.id, x, y });
+    setSelectedTokenIds([token.id]);
+    setContextMenu({ tokenId: token.id, x, y, isGroupMenu: false });
   }
 
   function updateSingleToken(updated: SceneToken) {
@@ -1076,8 +1277,51 @@ export function TabletopCanvas({
     const next = localTokens.filter((t) => t.id !== tokenId);
     setLocalTokens(next);
     setSelectedTokenId(null);
+    setSelectedTokenIds((prev) => prev.filter((id) => id !== tokenId));
     setEditingTextId(null);
     setContextMenu(null);
+    onTokensChange?.(next);
+  }
+
+  function handleDeleteSelectedTokens(ids: string[]) {
+    const idSet = new Set(ids);
+    const next = localTokens.filter((t) => !idSet.has(t.id));
+    setLocalTokens(next);
+    setSelectedTokenId(null);
+    setSelectedTokenIds([]);
+    setEditingTextId(null);
+    setContextMenu(null);
+    onTokensChange?.(next);
+  }
+
+  function handleBatchVitalStatus(ids: string[], status: TokenVitalStatus) {
+    const idSet = new Set(ids);
+    const next = localTokens.map((t) =>
+      idSet.has(t.id) && t.layerKind !== 'text' && t.layerKind !== 'brush'
+        ? { ...t, vitalStatus: status }
+        : t
+    );
+    setLocalTokens(next);
+    onTokensChange?.(next);
+  }
+
+  function handleBatchVisibility(ids: string[], hidden: boolean) {
+    const idSet = new Set(ids);
+    const next = localTokens.map((t) =>
+      idSet.has(t.id) ? { ...t, hiddenFromPlayers: hidden } : t
+    );
+    setLocalTokens(next);
+    onTokensChange?.(next);
+  }
+
+  function handleBatchHit(ids: string[]) {
+    const idSet = new Set(ids);
+    const hitTs = Date.now();
+    const next = localTokens.map((t) =>
+      idSet.has(t.id) ? { ...t, hitAtMs: hitTs } : t
+    );
+    setLocalTokens(next);
+    setNowMs(hitTs);
     onTokensChange?.(next);
   }
 
@@ -1157,6 +1401,7 @@ export function TabletopCanvas({
         const next = [...localTokens, droppedToken];
         setLocalTokens(next);
         setSelectedTokenId(droppedToken.id);
+        setSelectedTokenIds([droppedToken.id]);
         onToolChange?.('move');
         onTokensChange?.(next);
         if (parsed.saveToVaultOnDrop && (droppedToken.imageUrl || droppedToken.mediaId)) {
@@ -1178,6 +1423,10 @@ export function TabletopCanvas({
   }
 
   const selectedToken = localTokens.find((t) => t.id === selectedTokenId) || null;
+  const selectedTokensList = localTokens.filter((t) => selectedTokenIds.includes(t.id));
+  const selectedCombatantPair = selectedTokensList.filter(
+    (t) => t.layerKind !== 'text' && t.layerKind !== 'brush'
+  );
   const contextToken = contextMenu
     ? localTokens.find((t) => t.id === contextMenu.tokenId) || null
     : null;
@@ -1230,6 +1479,11 @@ export function TabletopCanvas({
   const scaledCellSize = Math.max(8, (scene.grid.cellSizePx || 56) * mapScale);
   const scaledOffsetX = (scene.grid.offsetX || 0) * mapScale;
   const scaledOffsetY = (scene.grid.offsetY || 0) * mapScale;
+
+  // Seamless Camera Zoom Transition into/out of 3D Duel Mode
+  const isDuelActive = Boolean(effectiveDuel);
+  const effectiveStageScale = isDuelActive ? stageDisplayScale * 2.15 : stageDisplayScale;
+  const effectiveTransformOrigin = `${(duelZoomOrigin.x * 100).toFixed(1)}% ${(duelZoomOrigin.y * 100).toFixed(1)}%`;
 
   function renderBrushStrokeSvg(stroke: {
     id: string;
@@ -1389,7 +1643,7 @@ export function TabletopCanvas({
         </div>
       )}
 
-      {/* Pre-Established Fixed Logical Coordinate Stage (1200 x referenceHeight, scaled uniformly) */}
+      {/* Pre-Established Fixed Logical Coordinate Stage (1200 x referenceHeight, scaled uniformly + seamless duel zoom) */}
       <div
         ref={mapBoxRef}
         onPointerDown={handleStagePointerDown}
@@ -1405,13 +1659,28 @@ export function TabletopCanvas({
             const { px, py } = getRelativeCoords(e.clientX, e.clientY);
             const hit = findWallNearPoint(px, py, 14);
             if (hit) removeWall(hit.id);
+            return;
+          }
+          // If 2+ tokens are selected and GM right-clicks anywhere on the map, open the group/duel context menu
+          if (mode === 'gm' && selectedTokenIds.length >= 2) {
+            e.preventDefault();
+            const { px: rawX, py: rawY } = getRelativeCoords(e.clientX, e.clientY);
+            const x = Math.max(10, Math.min(mapBoxSize.width - 300, rawX + 10));
+            const y = Math.max(10, Math.min(mapBoxSize.height - 320, rawY - 24));
+            setContextMenu({
+              tokenId: selectedTokenIds[0],
+              x,
+              y,
+              isGroupMenu: true,
+            });
           }
         }}
         style={{
           width: `${mapBoxSize.width}px`,
           height: `${mapBoxSize.height}px`,
-          transform: `scale(${stageDisplayScale})`,
-          transformOrigin: 'center center',
+          transform: `scale(${effectiveStageScale})`,
+          transformOrigin: effectiveTransformOrigin,
+          transition: 'transform 650ms cubic-bezier(0.16, 1, 0.3, 1)',
         }}
         className={`relative overflow-hidden shadow-2xl bg-stone-950 shrink-0 ${cursorClass}`}
       >
@@ -1435,6 +1704,20 @@ export function TabletopCanvas({
             </div>
           </div>
         )}
+
+        {/* Windows Desktop-Style Marquee Selection Box */}
+        {mode === 'gm' && marqueeRect && (
+          <div
+            style={{
+              left: `${Math.min(marqueeRect.startNx, marqueeRect.endNx) * 100}%`,
+              top: `${Math.min(marqueeRect.startNy, marqueeRect.endNy) * 100}%`,
+              width: `${Math.abs(marqueeRect.endNx - marqueeRect.startNx) * 100}%`,
+              height: `${Math.abs(marqueeRect.endNy - marqueeRect.startNy) * 100}%`,
+            }}
+            className="absolute z-30 pointer-events-none border border-sky-400 bg-sky-500/20 shadow-[0_0_12px_rgba(56,189,248,0.35)]"
+          />
+        )}
+
         {/* Scene Background: Supports Video (.mp4/.webm), Animated GIF, and Static Images */}
         {bgUrl && !mediaError ? (
           resolvedMediaKind === 'video' ? (
@@ -1522,10 +1805,15 @@ export function TabletopCanvas({
           {interactiveLayers.map((token) => {
             if (mode !== 'gm' && token.hiddenFromPlayers) return null;
             const imgSrc = tokenImgUrls[token.id];
-            const isSelected = mode === 'gm' && selectedTokenId === token.id;
+            const isSelected =
+              mode === 'gm' &&
+              (selectedTokenId === token.id || selectedTokenIds.includes(token.id));
+            const isMultiSelected =
+              mode === 'gm' && selectedTokenIds.length > 1 && selectedTokenIds.includes(token.id);
             const isHit = Boolean(token.hitAtMs && nowMs - token.hitAtMs < 650);
             const isText = token.layerKind === 'text';
             const isRect = token.shape === 'rect' || token.layerKind === 'image' || isText;
+            const vitalStatus: TokenVitalStatus = token.vitalStatus || 'alive';
 
             const refW = token.widthPx || token.sizePx || 52;
             const refH = token.heightPx || token.sizePx || 52;
@@ -1533,13 +1821,15 @@ export function TabletopCanvas({
             const dispH = Math.max(16, refH * mapScale);
 
             const behaviorClass =
-              token.behavior === 'float'
-                ? 'token-behavior-float'
-                : token.behavior === 'pulse'
-                  ? 'token-behavior-pulse'
-                  : token.behavior === 'tremble'
-                    ? 'token-behavior-tremble'
-                    : '';
+              vitalStatus === 'dead' || vitalStatus === 'unconscious'
+                ? ''
+                : token.behavior === 'float'
+                  ? 'token-behavior-float'
+                  : token.behavior === 'pulse'
+                    ? 'token-behavior-pulse'
+                    : token.behavior === 'tremble'
+                      ? 'token-behavior-tremble'
+                      : '';
             const texClass =
               token.texture === 'grain'
                 ? 'token-tex-grain'
@@ -1553,6 +1843,16 @@ export function TabletopCanvas({
             const statuses = token.statuses || [];
             const outlineCol = token.outlineColor || token.color || '#8f2d2d';
 
+            // Visual Filter for Vital Status (Unconscious, Dying, Dead)
+            const vitalFilterCss =
+              vitalStatus === 'dead'
+                ? 'grayscale(1) contrast(1.45) brightness(0.42)'
+                : vitalStatus === 'dying'
+                  ? 'sepia(0.65) hue-rotate(-50deg) saturate(2.5) contrast(1.25) brightness(0.82)'
+                  : vitalStatus === 'unconscious'
+                    ? 'grayscale(0.78) brightness(0.68) contrast(1.12) hue-rotate(195deg)'
+                    : undefined;
+
             return (
               <div
                 key={token.id}
@@ -1561,6 +1861,7 @@ export function TabletopCanvas({
                   if (mode === 'gm' && isText) {
                     e.stopPropagation();
                     setSelectedTokenId(token.id);
+                    setSelectedTokenIds([token.id]);
                     setEditingTextId(token.id);
                   }
                 }}
@@ -1570,14 +1871,19 @@ export function TabletopCanvas({
                   top: `${token.y * 100}%`,
                   width: `${dispW}px`,
                   height: `${dispH}px`,
-                  transform: 'translate(-50%, -50%)',
+                  transform:
+                    vitalStatus === 'unconscious'
+                      ? 'translate(-50%, -50%) rotate(-12deg)'
+                      : 'translate(-50%, -50%)',
                   opacity: token.hiddenFromPlayers
                     ? 0.52
                     : typeof token.opacity === 'number'
                       ? token.opacity
                       : 1,
                 }}
-                className={`absolute ${behaviorClass} ${isHit ? 'token-hit-active' : ''} ${
+                className={`absolute transition-transform duration-200 ${behaviorClass} ${
+                  isHit ? 'token-hit-active' : ''
+                } ${
                   mode === 'gm' && activeTool === 'move'
                     ? token.locked
                       ? 'pointer-events-auto cursor-default'
@@ -1586,15 +1892,24 @@ export function TabletopCanvas({
                 } ${isSelected ? 'z-20' : 'z-10'}`}
                 title={
                   mode === 'gm'
-                    ? `${token.name} (arraste as alças nos cantos para redimensionar · botão direito para editar)`
+                    ? `${token.name} (arraste para mover · arraste caixa no mapa para selecionar vários · botão direito com 2 selecionados para Duelo 3D)`
                     : token.name
                 }
               >
                 {/* Rotating Aura Ring Behavior */}
-                {token.behavior === 'spin_ring' && !isText && (
+                {token.behavior === 'spin_ring' && !isText && vitalStatus === 'alive' && (
                   <div
                     className={`absolute -inset-1.5 ${isRect ? 'rounded-md' : 'rounded-full'} border-2 border-dashed pointer-events-none token-spin-aura`}
                     style={{ borderColor: outlineCol }}
+                  />
+                )}
+
+                {/* Multi-Selection Highlight Ring */}
+                {isMultiSelected && (
+                  <div
+                    className={`absolute -inset-1.5 ${
+                      isRect ? 'rounded-none' : 'rounded-full'
+                    } border-2 border-amber-400 shadow-[0_0_14px_rgba(251,191,36,0.75)] pointer-events-none`}
                   />
                 )}
 
@@ -1641,32 +1956,118 @@ export function TabletopCanvas({
                   <div
                     style={{
                       ...getTokenBorderStyle(token, isSelected),
-                      boxShadow: getTokenShadowStyle(token, isHit),
+                      boxShadow:
+                        vitalStatus === 'dying'
+                          ? '0 0 22px 6px rgba(220, 38, 38, 0.92), 0 6px 16px rgba(0,0,0,0.65)'
+                          : vitalStatus === 'unconscious'
+                            ? '0 0 16px 3px rgba(99, 102, 241, 0.75), 0 4px 12px rgba(0,0,0,0.6)'
+                            : getTokenShadowStyle(token, isHit),
                     }}
                     className={`relative w-full h-full ${
                       isRect ? 'rounded-none' : 'rounded-full'
-                    } flex items-center justify-center overflow-hidden`}
+                    } flex items-center justify-center overflow-hidden ${
+                      vitalStatus === 'dying'
+                        ? 'animate-pulse ring-2 ring-red-500'
+                        : vitalStatus === 'unconscious'
+                          ? 'ring-2 ring-indigo-400/90'
+                          : vitalStatus === 'dead'
+                            ? 'ring-2 ring-red-900/90'
+                            : ''
+                    }`}
                   >
-                    {imgSrc ? (
-                      <img
-                        src={imgSrc}
-                        alt={token.name}
-                        referrerPolicy="no-referrer"
-                        draggable={false}
-                        className="w-full h-full object-cover pointer-events-none"
-                      />
-                    ) : (
-                      <div
-                        className="w-full h-full flex items-center justify-center text-xs font-bold text-white uppercase"
-                        style={{ backgroundColor: token.color }}
-                      >
-                        {token.name.slice(0, 2)}
-                      </div>
-                    )}
+                    <div
+                      className="w-full h-full flex items-center justify-center"
+                      style={{ filter: vitalFilterCss }}
+                    >
+                      {imgSrc ? (
+                        <img
+                          src={imgSrc}
+                          alt={token.name}
+                          referrerPolicy="no-referrer"
+                          draggable={false}
+                          className="w-full h-full object-cover pointer-events-none"
+                        />
+                      ) : (
+                        <div
+                          className="w-full h-full flex items-center justify-center text-xs font-bold text-white uppercase"
+                          style={{ backgroundColor: token.color }}
+                        >
+                          {token.name.slice(0, 2)}
+                        </div>
+                      )}
+                    </div>
 
                     {/* Texture Overlay */}
                     {texClass && (
                       <div className={`absolute inset-0 pointer-events-none ${texClass}`} />
+                    )}
+
+                    {/* Vital Condition Visual Overlays (Unconscious / Dying / Dead) */}
+                    {vitalStatus === 'unconscious' && (
+                      <div className="absolute inset-0 bg-indigo-950/40 pointer-events-none flex items-center justify-center">
+                        <Moon
+                          className="text-indigo-200 drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)]"
+                          style={{
+                            width: `${Math.max(14, Math.min(34, dispW * 0.42))}px`,
+                            height: `${Math.max(14, Math.min(34, dispH * 0.42))}px`,
+                          }}
+                        />
+                      </div>
+                    )}
+
+                    {vitalStatus === 'dying' && (
+                      <div
+                        className="absolute inset-0 pointer-events-none flex items-center justify-center"
+                        style={{
+                          background:
+                            'radial-gradient(circle, rgba(220,38,38,0.18) 25%, rgba(153,27,27,0.72) 100%)',
+                        }}
+                      >
+                        <HeartPulse
+                          className="text-red-200 animate-pulse drop-shadow-[0_2px_8px_rgba(0,0,0,0.95)]"
+                          style={{
+                            width: `${Math.max(14, Math.min(36, dispW * 0.45))}px`,
+                            height: `${Math.max(14, Math.min(36, dispH * 0.45))}px`,
+                          }}
+                        />
+                      </div>
+                    )}
+
+                    {vitalStatus === 'dead' && (
+                      <div className="absolute inset-0 bg-black/45 pointer-events-none flex items-center justify-center">
+                        <svg
+                          viewBox="0 0 100 100"
+                          className="absolute inset-0 w-full h-full pointer-events-none"
+                        >
+                          <line
+                            x1="14"
+                            y1="14"
+                            x2="86"
+                            y2="86"
+                            stroke="#dc2626"
+                            strokeWidth="10"
+                            strokeLinecap="round"
+                            opacity="0.92"
+                          />
+                          <line
+                            x1="86"
+                            y1="14"
+                            x2="14"
+                            y2="86"
+                            stroke="#dc2626"
+                            strokeWidth="10"
+                            strokeLinecap="round"
+                            opacity="0.92"
+                          />
+                        </svg>
+                        <Skull
+                          className="relative z-10 text-stone-100 drop-shadow-[0_2px_8px_rgba(0,0,0,1)]"
+                          style={{
+                            width: `${Math.max(14, Math.min(36, dispW * 0.45))}px`,
+                            height: `${Math.max(14, Math.min(36, dispH * 0.45))}px`,
+                          }}
+                        />
+                      </div>
                     )}
 
                     {/* Live Hit Flash Overlay */}
@@ -1676,8 +2077,8 @@ export function TabletopCanvas({
                   </div>
                 )}
 
-                {/* Photoshop-Style Transform Bounding Box & 8 Resize Handles (GM Selected Layer) */}
-                {isSelected && activeTool === 'move' && !token.locked && (
+                {/* Photoshop-Style Transform Bounding Box & 8 Resize Handles (GM Single Selected Layer) */}
+                {isSelected && selectedTokenIds.length <= 1 && activeTool === 'move' && !token.locked && (
                   <div className="absolute -inset-1 border border-sky-400 pointer-events-none">
                     {(
                       [
@@ -1718,11 +2119,12 @@ export function TabletopCanvas({
             );
           })}
 
-          {/* Token labels & concise status text cleanly positioned underneath */}
+          {/* Token labels, vital condition tags & concise status text cleanly positioned underneath */}
           {interactiveLayers.map((token) => {
             if (mode !== 'gm' && token.hiddenFromPlayers) return null;
             if (token.layerKind === 'text' || token.layerKind === 'image') return null;
             const statuses = token.statuses || [];
+            const vitalStatus: TokenVitalStatus = token.vitalStatus || 'alive';
             const refH = token.heightPx || token.sizePx || 52;
             const dispH = Math.max(16, refH * mapScale);
             return (
@@ -1735,10 +2137,29 @@ export function TabletopCanvas({
                 }}
                 className="absolute z-10 flex flex-col items-center gap-0.5 pointer-events-none"
               >
-                <div className="px-1.5 py-0.5 text-[11px] leading-none bg-black/75 text-stone-100 whitespace-nowrap">
-                  {token.name}
-                  {mode === 'gm' && token.hiddenFromPlayers ? ' (Oculto)' : ''}
+                <div className="px-1.5 py-0.5 text-[11px] leading-none bg-black/80 text-stone-100 whitespace-nowrap flex items-center gap-1">
+                  <span>
+                    {token.name}
+                    {mode === 'gm' && token.hiddenFromPlayers ? ' (Oculto)' : ''}
+                  </span>
                 </div>
+                {vitalStatus !== 'alive' && (
+                  <div
+                    className={`px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider leading-none whitespace-nowrap shadow ${
+                      vitalStatus === 'dead'
+                        ? 'bg-red-950/95 text-red-200 border border-red-600/80'
+                        : vitalStatus === 'dying'
+                          ? 'bg-red-700 text-white animate-pulse'
+                          : 'bg-indigo-900/95 text-indigo-100 border border-indigo-400/70'
+                    }`}
+                  >
+                    {vitalStatus === 'dead'
+                      ? 'MORTO'
+                      : vitalStatus === 'dying'
+                        ? 'MORRENDO'
+                        : 'INCONSCIENTE'}
+                  </div>
+                )}
                 {statuses.length > 0 && (
                   <div className="px-1.5 py-0.5 text-[9px] leading-none bg-black/70 text-stone-200 whitespace-nowrap max-w-[140px] truncate">
                     {statuses.map((s) => s.label).join(' · ')}
@@ -1917,39 +2338,234 @@ export function TabletopCanvas({
           </svg>
         )}
 
-        {/* Right-Click Floating Token Customization Popover (GM Only) */}
-        {mode === 'gm' && contextMenu && contextToken && (
+        {/* Right-Click Floating Context Menu: Multi-Selection & 3D Duel Menu OR Single Token Editor */}
+        {mode === 'gm' && contextMenu && (
           <div
             onPointerDown={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.stopPropagation()}
-            style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px`, width: '280px' }}
+            style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px`, width: '286px' }}
             className="absolute z-40"
           >
-            <TokenEditorPanel
-              token={contextToken}
-              uploadContext={uploadContext}
-              compact
-              onChange={(updated) => updateSingleToken(updated)}
-              onTriggerHit={() => triggerTokenHit(contextToken.id)}
-              onShowPopup={onShowTokenPopup}
-              onSaveToVault={onSaveToVault}
-              onDelete={() => handleDeleteToken(contextToken.id)}
-              onClose={() => setContextMenu(null)}
-              onNotify={onNotify}
-            />
+            {contextMenu.isGroupMenu && selectedTokenIds.length >= 2 ? (
+              <div className="vtt-surface border vtt-border shadow-2xl flex flex-col text-xs overflow-hidden">
+                <div className="px-3 py-2.5 border-b vtt-border vtt-subtle flex items-center justify-between gap-2">
+                  <span className="font-bold font-typewriter">
+                    {selectedTokenIds.length} Tokens Selecionados
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setContextMenu(null)}
+                    className="p-1 vtt-muted hover:opacity-100"
+                    aria-label="Fechar menu"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <div className="p-3 space-y-2.5">
+                  {selectedCombatantPair.length === 2 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const [tokA, tokB] = selectedCombatantPair;
+                        setContextMenu(null);
+                        onRequestDuelPair?.(tokA, tokB);
+                      }}
+                      className="w-full py-2.5 px-3 text-xs font-bold font-typewriter bg-amber-500 hover:bg-amber-400 text-stone-950 shadow-md flex items-center justify-center gap-2"
+                    >
+                      <Swords className="w-4 h-4 shrink-0" />
+                      <span className="truncate">
+                        Iniciar Duelo 3D ({selectedCombatantPair[0].name} vs{' '}
+                        {selectedCombatantPair[1].name})
+                      </span>
+                    </button>
+                  ) : (
+                    <p className="text-[11px] vtt-muted px-2 py-1.5 border vtt-border vtt-canvas">
+                      Selecione exatamente <strong>2 tokens</strong> para iniciar o Modo Duelo 3D.
+                    </p>
+                  )}
+
+                  <div className="space-y-1">
+                    <span className="text-[10px] font-bold uppercase tracking-wider vtt-muted block">
+                      Estado Vital do Grupo
+                    </span>
+                    <div className="grid grid-cols-2 gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleBatchVitalStatus(selectedTokenIds, 'alive')}
+                        className="py-1.5 px-2 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1.5"
+                      >
+                        <Heart className="w-3.5 h-3.5 text-emerald-500" />
+                        <span>Vivo / Normal</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBatchVitalStatus(selectedTokenIds, 'unconscious')}
+                        className="py-1.5 px-2 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1.5"
+                      >
+                        <Moon className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>Inconsciente</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBatchVitalStatus(selectedTokenIds, 'dying')}
+                        className="py-1.5 px-2 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1.5"
+                      >
+                        <HeartPulse className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Morrendo</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBatchVitalStatus(selectedTokenIds, 'dead')}
+                        className="py-1.5 px-2 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1.5"
+                      >
+                        <Skull className="w-3.5 h-3.5 text-red-500" />
+                        <span>Morto</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5 pt-1 border-t vtt-border">
+                    <button
+                      type="button"
+                      onClick={() => handleBatchHit(selectedTokenIds)}
+                      className="py-1.5 px-2 text-[11px] font-semibold bg-red-700 hover:bg-red-800 text-white flex items-center justify-center gap-1"
+                    >
+                      <Zap className="w-3.5 h-3.5" />
+                      Hit em Todos
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleBatchVisibility(selectedTokenIds, false)}
+                      className="py-1.5 px-2 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center justify-center gap-1"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      Revelar Todos
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleBatchVisibility(selectedTokenIds, true)}
+                      className="py-1.5 px-2 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center justify-center gap-1"
+                    >
+                      <EyeOff className="w-3.5 h-3.5" />
+                      Ocultar Todos
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteSelectedTokens(selectedTokenIds)}
+                      className="py-1.5 px-2 text-[11px] border vtt-border text-red-600 dark:text-red-400 hover:vtt-subtle flex items-center justify-center gap-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Remover ({selectedTokenIds.length})
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              contextToken && (
+                <TokenEditorPanel
+                  token={contextToken}
+                  uploadContext={uploadContext}
+                  compact
+                  onChange={(updated) => updateSingleToken(updated)}
+                  onTriggerHit={() => triggerTokenHit(contextToken.id)}
+                  onShowPopup={onShowTokenPopup}
+                  onSaveToVault={onSaveToVault}
+                  onDelete={() => handleDeleteToken(contextToken.id)}
+                  onClose={() => setContextMenu(null)}
+                  onNotify={onNotify}
+                />
+              )
+            )}
           </div>
         )}
       </div>
 
-      {/* GM Selected Layer Floating Quick Action Bar */}
+      {/* GM Multi-Selection Floating Quick Action Bar (when 2+ tokens are selected) */}
       {mode === 'gm' &&
-        selectedToken &&
+        selectedTokenIds.length > 1 &&
         !draggingTokenId &&
+        !groupDragState &&
         !resizingState &&
         !contextMenu && (
           <div
             onPointerDown={(e) => e.stopPropagation()}
-            className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 vtt-surface border px-3 py-2 flex items-center gap-1.5 shadow-lg max-w-[96%]"
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 vtt-surface border px-3 py-2 flex items-center gap-2 shadow-xl max-w-[96%] flex-wrap justify-center"
+          >
+            <span className="text-xs font-bold font-typewriter text-amber-400">
+              {selectedTokenIds.length} selecionados
+            </span>
+            {selectedCombatantPair.length === 2 && (
+              <button
+                type="button"
+                onClick={() => onRequestDuelPair?.(selectedCombatantPair[0], selectedCombatantPair[1])}
+                className="px-3 py-1.5 text-xs font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 flex items-center gap-1.5 shadow"
+                title="Ou clique com o botão direito nos 2 tokens selecionados"
+              >
+                <Swords className="w-3.5 h-3.5" />
+                Iniciar Duelo 3D (ou Botão Direito)
+              </button>
+            )}
+            <div className="flex items-center gap-1 border-l vtt-border pl-2">
+              <button
+                type="button"
+                onClick={() => handleBatchVitalStatus(selectedTokenIds, 'alive')}
+                className="px-2 py-1 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1"
+                title="Marcar selecionados como Vivos"
+              >
+                <Heart className="w-3 h-3 text-emerald-500" />
+                Vivo
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBatchVitalStatus(selectedTokenIds, 'unconscious')}
+                className="px-2 py-1 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1"
+                title="Marcar selecionados como Inconscientes"
+              >
+                <Moon className="w-3 h-3 text-indigo-400" />
+                Inconsciente
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBatchVitalStatus(selectedTokenIds, 'dying')}
+                className="px-2 py-1 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1"
+                title="Marcar selecionados como Morrendo"
+              >
+                <HeartPulse className="w-3 h-3 text-amber-400" />
+                Morrendo
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBatchVitalStatus(selectedTokenIds, 'dead')}
+                className="px-2 py-1 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1"
+                title="Marcar selecionados como Mortos"
+              >
+                <Skull className="w-3 h-3 text-red-500" />
+                Morto
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleDeleteSelectedTokens(selectedTokenIds)}
+              className="p-1.5 border vtt-border text-red-600 dark:text-red-400 hover:vtt-subtle"
+              title="Remover selecionados"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+      {/* GM Single Selected Layer Floating Quick Action Bar */}
+      {mode === 'gm' &&
+        selectedToken &&
+        selectedTokenIds.length <= 1 &&
+        !draggingTokenId &&
+        !groupDragState &&
+        !resizingState &&
+        !contextMenu && (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 vtt-surface border px-3 py-2 flex items-center gap-1.5 shadow-lg max-w-[96%] flex-wrap justify-center"
           >
             <span className="text-xs font-semibold truncate max-w-[120px]">
               {selectedToken.name}
@@ -1959,20 +2575,48 @@ export function TabletopCanvas({
             </span>
             {selectedToken.layerKind !== 'text' && (
               <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setDuelCandidateId(selectedToken.id);
-                    onNotify?.(
-                      `"${selectedToken.name}" pronto para duelo! Clique agora no token do oponente.`
+                {/* 1-Click Vital Condition Pills directly on the floating bar */}
+                <div className="flex items-center border vtt-border vtt-canvas">
+                  {(
+                    [
+                      { id: 'alive' as const, label: 'Vivo', icon: Heart, color: 'text-emerald-500' },
+                      {
+                        id: 'unconscious' as const,
+                        label: 'Inconsc.',
+                        icon: Moon,
+                        color: 'text-indigo-400',
+                      },
+                      {
+                        id: 'dying' as const,
+                        label: 'Morrendo',
+                        icon: HeartPulse,
+                        color: 'text-amber-400',
+                      },
+                      { id: 'dead' as const, label: 'Morto', icon: Skull, color: 'text-red-500' },
+                    ]
+                  ).map((st) => {
+                    const Icon = st.icon;
+                    const active = (selectedToken.vitalStatus || 'alive') === st.id;
+                    return (
+                      <button
+                        key={st.id}
+                        type="button"
+                        onClick={() =>
+                          updateSingleToken({ ...selectedToken, vitalStatus: st.id })
+                        }
+                        className={`px-2 py-1 text-[11px] flex items-center gap-1 transition-colors ${
+                          active
+                            ? 'vtt-accent-btn font-bold'
+                            : 'vtt-muted hover:opacity-100'
+                        }`}
+                        title={`Estado vital: ${st.label}`}
+                      >
+                        <Icon className={`w-3 h-3 ${active ? '' : st.color}`} />
+                        <span className="hidden sm:inline">{st.label}</span>
+                      </button>
                     );
-                  }}
-                  className="px-2.5 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-stone-950 flex items-center gap-1 whitespace-nowrap shrink-0"
-                  title="Selecionar um segundo token para abrir o Modo Duelo 3D (ou Shift+Clique em outro token)"
-                >
-                  <Swords className="w-3.5 h-3.5" />
-                  Duelo 3D
-                </button>
+                  })}
+                </div>
                 <button
                   type="button"
                   onClick={() => triggerTokenHit(selectedToken.id)}

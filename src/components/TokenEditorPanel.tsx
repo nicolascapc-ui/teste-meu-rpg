@@ -1,14 +1,20 @@
 import { useState } from 'react';
 import {
   BookmarkPlus,
+  ChevronDown,
+  ChevronUp,
   Circle,
   Eye,
   EyeOff,
   Flame,
+  Heart,
+  HeartPulse,
   Lock,
   Maximize2,
+  Moon,
   Plus,
   Radar,
+  Skull,
   Sparkles,
   Square,
   Trash2,
@@ -25,6 +31,7 @@ import type {
   TokenShadow,
   TokenStatusEffect,
   TokenTexture,
+  TokenVitalStatus,
 } from '../types/vtt';
 import { uploadMediaFile, type CampaignUploadContext } from '../lib/mediaStore';
 
@@ -82,8 +89,10 @@ export function TokenEditorPanel({
   const [customStatusLabel, setCustomStatusLabel] = useState('');
   const [customStatusKind, setCustomStatusKind] = useState<'buff' | 'debuff'>('buff');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [showStatusAccordion, setShowStatusAccordion] = useState(false);
 
   const statuses = token.statuses || [];
+  const vitalStatus: TokenVitalStatus = token.vitalStatus || 'alive';
   const isTextLayer = token.layerKind === 'text';
   const isImageLayer = token.layerKind === 'image';
   const currentW = Math.round(token.widthPx || token.sizePx || 56);
@@ -228,8 +237,63 @@ export function TokenEditorPanel({
               </div>
             ) : (
               <>
+                {/* Estado Vital / Condição Visual no Mapa */}
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider vtt-muted block">
+                    Estado Vital no Mapa (Filtro Visual)
+                  </span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {(
+                      [
+                        {
+                          id: 'alive' as const,
+                          label: 'Vivo / Normal',
+                          icon: Heart,
+                          activeClass: 'bg-emerald-700 text-white border-emerald-500 font-bold',
+                        },
+                        {
+                          id: 'unconscious' as const,
+                          label: 'Inconsciente',
+                          icon: Moon,
+                          activeClass: 'bg-indigo-700 text-white border-indigo-400 font-bold',
+                        },
+                        {
+                          id: 'dying' as const,
+                          label: 'Morrendo',
+                          icon: HeartPulse,
+                          activeClass: 'bg-amber-700 text-white border-amber-400 font-bold',
+                        },
+                        {
+                          id: 'dead' as const,
+                          label: 'Morto',
+                          icon: Skull,
+                          activeClass: 'bg-red-800 text-white border-red-500 font-bold',
+                        },
+                      ]
+                    ).map((item) => {
+                      const Icon = item.icon;
+                      const active = vitalStatus === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => patch({ vitalStatus: item.id })}
+                          className={`py-1.5 px-2 text-[11px] border flex items-center gap-1.5 transition-all ${
+                            active
+                              ? item.activeClass
+                              : 'vtt-canvas vtt-border vtt-muted hover:opacity-100'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* Quick Table Actions */}
-                <div className="grid grid-cols-2 gap-1.5">
+                <div className="grid grid-cols-2 gap-1.5 pt-1">
                   <button
                     type="button"
                     onClick={onTriggerHit}
@@ -311,76 +375,104 @@ export function TokenEditorPanel({
               </button>
             </div>
 
-            {/* Buffs & Debuffs Profiles */}
+            {/* Buffs & Debuffs Profiles (Progressive Disclosure Accordion) */}
             {!isTextLayer && (
-              <div className="space-y-2 border-t vtt-border pt-2.5">
+              <div className="space-y-2 border-t vtt-border pt-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-semibold flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowStatusAccordion((v) => !v)}
+                    className="flex items-center gap-1.5 text-[11px] font-semibold hover:opacity-100"
+                  >
                     <Flame className="w-3.5 h-3.5 vtt-accent-text" />
-                    Buffs & Debuffs
-                  </span>
+                    <span>Buffs & Debuffs ({statuses.length})</span>
+                    {showStatusAccordion ? (
+                      <ChevronUp className="w-3.5 h-3.5 vtt-muted" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5 vtt-muted" />
+                    )}
+                  </button>
                   {statuses.length > 0 && (
                     <button
                       type="button"
                       onClick={() => patch({ statuses: [] })}
                       className="text-[10px] vtt-muted hover:underline"
                     >
-                      Limpar ({statuses.length})
+                      Limpar
                     </button>
                   )}
                 </div>
 
-                <div className="grid grid-cols-2 gap-1">
-                  {PRESET_STATUS_PROFILES.map((preset) => {
-                    const active = statuses.some((s) => s.id === preset.id || s.label === preset.label);
-                    return (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        onClick={() => togglePresetStatus(preset)}
-                        className={`px-2 py-1.5 text-[11px] border text-left flex items-center gap-1.5 transition-colors ${
-                          active
-                            ? 'vtt-subtle border-current font-semibold'
-                            : 'vtt-canvas vtt-border vtt-muted hover:opacity-100'
-                        }`}
+                {/* Active status badges always visible when collapsed */}
+                {!showStatusAccordion && statuses.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {statuses.map((s) => (
+                      <span
+                        key={s.id}
+                        className="px-1.5 py-0.5 text-[10px] font-semibold text-white flex items-center gap-1"
+                        style={{ backgroundColor: s.color }}
                       >
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ backgroundColor: preset.color }}
-                        />
-                        <span className="truncate">{preset.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+                        {s.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
 
-                <form onSubmit={addCustomStatus} className="flex items-center gap-1 pt-1">
-                  <select
-                    value={customStatusKind}
-                    onChange={(e) => setCustomStatusKind(e.target.value as 'buff' | 'debuff')}
-                    className="px-1.5 py-1.5 text-[11px] border vtt-border vtt-canvas shrink-0"
-                    aria-label="Tipo de efeito"
-                  >
-                    <option value="buff">Buff</option>
-                    <option value="debuff">Debuff</option>
-                  </select>
-                  <input
-                    type="text"
-                    value={customStatusLabel}
-                    onChange={(e) => setCustomStatusLabel(e.target.value)}
-                    maxLength={24}
-                    placeholder="Efeito próprio..."
-                    className="flex-1 min-w-0 px-2 py-1.5 text-[11px] border vtt-border vtt-canvas"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!customStatusLabel.trim()}
-                    className="p-1.5 vtt-accent-btn disabled:opacity-40 shrink-0"
-                    aria-label="Adicionar status"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                  </button>
-                </form>
+                {showStatusAccordion && (
+                  <>
+                    <div className="grid grid-cols-2 gap-1">
+                      {PRESET_STATUS_PROFILES.map((preset) => {
+                        const active = statuses.some((s) => s.id === preset.id || s.label === preset.label);
+                        return (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => togglePresetStatus(preset)}
+                            className={`px-2 py-1.5 text-[11px] border text-left flex items-center gap-1.5 transition-colors ${
+                              active
+                                ? 'vtt-subtle border-current font-semibold'
+                                : 'vtt-canvas vtt-border vtt-muted hover:opacity-100'
+                            }`}
+                          >
+                            <span
+                              className="w-2 h-2 rounded-full shrink-0"
+                              style={{ backgroundColor: preset.color }}
+                            />
+                            <span className="truncate">{preset.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <form onSubmit={addCustomStatus} className="flex items-center gap-1 pt-1">
+                      <select
+                        value={customStatusKind}
+                        onChange={(e) => setCustomStatusKind(e.target.value as 'buff' | 'debuff')}
+                        className="px-1.5 py-1.5 text-[11px] border vtt-border vtt-canvas shrink-0"
+                        aria-label="Tipo de efeito"
+                      >
+                        <option value="buff">Buff</option>
+                        <option value="debuff">Debuff</option>
+                      </select>
+                      <input
+                        type="text"
+                        value={customStatusLabel}
+                        onChange={(e) => setCustomStatusLabel(e.target.value)}
+                        maxLength={24}
+                        placeholder="Efeito próprio..."
+                        className="flex-1 min-w-0 px-2 py-1.5 text-[11px] border vtt-border vtt-canvas"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!customStatusLabel.trim()}
+                        className="p-1.5 vtt-accent-btn disabled:opacity-40 shrink-0"
+                        aria-label="Adicionar status"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </form>
+                  </>
+                )}
               </div>
             )}
           </>

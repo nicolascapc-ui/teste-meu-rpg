@@ -209,62 +209,71 @@ export function ThemePanel({
               </div>
             </section>
 
-            {/* Manual Color Pickers */}
-            <section className="space-y-3 border-t vtt-border pt-4">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold">Ajuste fino de cores</p>
-                <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={theme.isDark}
-                    onChange={(e) => updateField('isDark', e.target.checked)}
-                  />
-                  <span>Modo escuro</span>
-                </label>
-              </div>
+            {/* Manual Color Pickers (Progressive Disclosure) */}
+            <details className="group border-t vtt-border pt-4">
+              <summary className="list-none cursor-pointer flex items-center justify-between text-xs font-semibold select-none">
+                <span>Ajuste fino de cores (7 variáveis)</span>
+                <span className="text-[11px] vtt-muted group-open:rotate-180 transition-transform">
+                  ▾
+                </span>
+              </summary>
 
-              <div className="space-y-2">
-                {(
-                  [
-                    ['bgCanvas', 'Fundo principal'],
-                    ['bgSurface', 'Painéis e cartões'],
-                    ['bgSubtle', 'Fundo secundário'],
-                    ['textPrimary', 'Texto principal'],
-                    ['textMuted', 'Texto secundário'],
-                    ['borderColor', 'Linhas e bordas'],
-                    ['accentColor', 'Cor de acento (botões)'],
-                  ] as const
-                ).map(([field, label]) => (
-                  <label
-                    key={field}
-                    className="flex items-center justify-between gap-3 text-xs border vtt-border p-2 vtt-canvas"
-                  >
-                    <span>{label}</span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[11px] vtt-muted uppercase tabular-nums">
-                        {theme[field]}
-                      </span>
-                      <input
-                        type="color"
-                        value={theme[field]}
-                        onChange={(e) => updateField(field, e.target.value)}
-                        className="w-7 h-7 border-0 bg-transparent cursor-pointer"
-                      />
-                    </div>
+              <div className="space-y-3 pt-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] vtt-muted">Contraste base da interface</span>
+                  <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={theme.isDark}
+                      onChange={(e) => updateField('isDark', e.target.checked)}
+                    />
+                    <span>Modo escuro</span>
                   </label>
-                ))}
+                </div>
+
+                <div className="space-y-1.5">
+                  {(
+                    [
+                      ['bgCanvas', 'Fundo principal'],
+                      ['bgSurface', 'Painéis e cartões'],
+                      ['bgSubtle', 'Fundo secundário'],
+                      ['textPrimary', 'Texto principal'],
+                      ['textMuted', 'Texto secundário'],
+                      ['borderColor', 'Linhas e bordas'],
+                      ['accentColor', 'Cor de acento (botões)'],
+                    ] as const
+                  ).map(([field, label]) => (
+                    <label
+                      key={field}
+                      className="flex items-center justify-between gap-3 text-xs border vtt-border px-2.5 py-1.5 vtt-canvas"
+                    >
+                      <span>{label}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] vtt-muted uppercase tabular-nums">
+                          {theme[field]}
+                        </span>
+                        <input
+                          type="color"
+                          value={theme[field]}
+                          onChange={(e) => updateField(field, e.target.value)}
+                          className="w-6 h-6 border-0 bg-transparent cursor-pointer"
+                        />
+                      </div>
+                    </label>
+                  ))}
+                </div>
               </div>
-            </section>
+            </details>
           </>
         )}
 
         {/* TAB 2: SCENE FX PRESETS + 1-CLICK IMPACT */}
         {tab === 'presets' && (
           <>
-            <div className="space-y-2 border-b vtt-border pb-3">
-              <p className="text-xs font-bold font-typewriter">Efeitos Visuais da Cena</p>
+            <div className="space-y-1.5 border-b vtt-border pb-3">
+              <p className="text-xs font-bold font-typewriter">Efeitos Visuais da Cena & Duelo 3D</p>
               <p className="text-[11px] vtt-muted leading-relaxed">
-                Aplique atmosferas em loop direto no palco e sincronizadas instantaneamente com a Segunda Tela dos jogadores.
+                Atmosferas (CRT, Ruído, Glitch, Vinheta e Filtros) aplicadas ao mapa e também à Arena de Duelo 3D.
               </p>
             </div>
 

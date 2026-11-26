@@ -122,6 +122,26 @@ export function PlayerMobileView({
     }
   }, [liveState?.theme]);
 
+  const playerViewMode = liveState?.activeScene?.playerViewMode || 'scene';
+  const activeDuel = liveState?.activeScene?.activeDuel || null;
+
+  // Automatically focus the section chosen by the GM when the GM changes playerViewMode, or switch to 'scene' when a 3D Duel starts
+  useEffect(() => {
+    if (activeDuel) {
+      setTab('scene');
+      return;
+    }
+    if (!liveState?.activeScene?.playerViewMode) return;
+    const mode = liveState.activeScene.playerViewMode;
+    if (mode === 'scene' || mode === 'standby') {
+      setTab('scene');
+    } else if (mode === 'clues') {
+      setTab('clues');
+    } else if (mode === 'dice') {
+      setTab('dice');
+    }
+  }, [liveState?.activeScene?.playerViewMode, activeDuel]);
+
   const uploadContext = useMemo(
     () => ({
       campaignId,
@@ -381,7 +401,7 @@ export function PlayerMobileView({
         )}
 
         {tab === 'scene' && (
-          <div className="h-full w-full">
+          <div className="h-full w-full relative">
             <SceneEffectsStage
               effects={sceneEffects}
               shakePulseMs={liveState?.shakePulseMs}
@@ -391,6 +411,48 @@ export function PlayerMobileView({
                 campaignId={campaignId}
                 scene={liveState?.activeScene || null}
                 mode="player"
+                activeDuel={activeDuel}
+              />
+              {!activeDuel && playerViewMode === 'standby' && (
+                <div className="absolute inset-0 z-30 vtt-canvas flex flex-col items-center justify-center p-6 text-center">
+                  <div className="max-w-sm space-y-3 p-6 border vtt-border vtt-surface shadow-xl">
+                    <p className="text-[11px] uppercase tracking-widest vtt-muted">
+                      Cena em Preparação
+                    </p>
+                    <h2 className="text-xl font-bold font-typewriter">
+                      {liveState?.campaignTitle || 'Mesa Digital'}
+                    </h2>
+                    <p className="text-xs vtt-muted">
+                      O mestre está preparando o próximo cenário nos bastidores. Você pode consultar sua Ficha, Dados ou Pistas abaixo.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* 3D Confrontation / Duel Arena for Player inside SceneEffectsStage so CRT & FX apply + exit zoom animates! */}
+              <DuelArena3DOverlay
+                campaignId={campaignId}
+                duel={activeDuel}
+                mode="player"
+                onExecuteDuelAction={({ side, action, rollDamageOnly }) => {
+                  if (side !== 'player') return;
+                  const formulaToRoll =
+                    rollDamageOnly && action.damageFormula ? action.damageFormula : action.formula;
+                  const activePlayerName =
+                    activeDuel?.player.name ||
+                    sheets[0]?.name ||
+                    user.displayName ||
+                    'Jogador';
+                  void handleRoll({
+                    input: formulaToRoll,
+                    label: rollDamageOnly ? `${action.label} (Dano)` : action.label,
+                    mode: 'normal',
+                    explode: false,
+                    visibility: 'public',
+                    blocks: sheets[0]?.blocks,
+                    rollerName: activePlayerName,
+                  });
+                }}
               />
             </SceneEffectsStage>
           </div>
@@ -450,32 +512,6 @@ export function PlayerMobileView({
           onDismiss={() => setOpenedPrivateHandout(null)}
         />
       )}
-
-      {/* 3D Confrontation / Duel Arena for Player */}
-      <DuelArena3DOverlay
-        campaignId={campaignId}
-        duel={liveState?.activeScene?.activeDuel || null}
-        mode="player"
-        onExecuteDuelAction={({ side, action, rollDamageOnly }) => {
-          if (side !== 'player') return;
-          const formulaToRoll =
-            rollDamageOnly && action.damageFormula ? action.damageFormula : action.formula;
-          const activePlayerName =
-            liveState?.activeScene?.activeDuel?.player.name ||
-            sheets[0]?.name ||
-            user.displayName ||
-            'Jogador';
-          void handleRoll({
-            input: formulaToRoll,
-            label: rollDamageOnly ? `${action.label} (Dano)` : action.label,
-            mode: 'normal',
-            explode: false,
-            visibility: 'public',
-            blocks: sheets[0]?.blocks,
-            rollerName: activePlayerName,
-          });
-        }}
-      />
 
       {/* Dynamic Rolling Dice Animation on Mobile */}
       <DiceRollOverlay roll={activeRollAnim} onComplete={clearRollAnim} position="center" />
