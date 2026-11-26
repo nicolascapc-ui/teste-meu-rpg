@@ -11,9 +11,12 @@ import {
   Loader2,
   Minus,
   Plus,
+  SlidersHorizontal,
   Sparkles,
+  Swords,
   Trash2,
   Upload,
+  Zap,
 } from 'lucide-react';
 import type { CharacterSheet, SheetBlock, SheetBlockType } from '../types/vtt';
 import {
@@ -22,6 +25,7 @@ import {
   type CampaignUploadContext,
 } from '../lib/mediaStore';
 import { parseSheetPdfInBrowser } from '../lib/clientPdfParser';
+import { buildAutoItemFormula } from '../lib/diceEngine';
 
 export interface CreateSheetPayload {
   name: string;
@@ -51,6 +55,116 @@ interface CharacterSheetPanelProps {
   onNotify: (msg: string) => void;
 }
 
+export type SystemDicePresetId =
+  | '1d20'
+  | 'pool_d20'
+  | '1d100'
+  | '2d6'
+  | 'pool_d10'
+  | 'pool_d6';
+
+export const SYSTEM_DICE_PRESETS: Array<{
+  id: SystemDicePresetId;
+  label: string;
+  shortDesc: string;
+}> = [
+  { id: '1d20', label: '1d20 + Atributo', shortDesc: 'D20 clássico (D&D, Tormenta, Pathfinder)' },
+  { id: 'pool_d20', label: 'Pool d20 (Maior)', shortDesc: 'Rola {Atributo}d20 e pega o maior (Ordem)' },
+  { id: '1d100', label: 'd100 <= Atributo', shortDesc: 'Percentual (Call of Cthulhu, Delta Green)' },
+  { id: '2d6', label: '2d6 + Atributo', shortDesc: 'Narrativo (PbtA, Apocalypse World)' },
+  { id: 'pool_d10', label: 'Pool d10 (Sucessos)', shortDesc: 'Conta dados >= 6 (Storyteller / Vampiro)' },
+  { id: 'pool_d6', label: 'Pool d6 + Bônus', shortDesc: 'Rola {Atributo}d6 somados' },
+];
+
+export const ITEM_DICE_OPTIONS: Array<{ id: string; label: string }> = [
+  { id: '1d20', label: '1d20 + Atributo' },
+  { id: 'pool_d20', label: '{Atributo}d20 (Maior)' },
+  { id: '1d100', label: '1d100 <= Atributo' },
+  { id: '2d6', label: '2d6 + Atributo' },
+  { id: 'pool_d10', label: '{Atributo}d10 (Sucessos >=6)' },
+  { id: 'pool_d6', label: '{Atributo}d6 + Bônus' },
+  { id: '1d12', label: '1d12 + Atributo' },
+  { id: '1d10', label: '1d10 + Atributo' },
+  { id: '1d8', label: '1d8 + Atributo' },
+  { id: '1d6', label: '1d6 + Atributo' },
+  { id: '1d4', label: '1d4 + Atributo' },
+];
+
+function buildStarterBlocksForPreset(
+  preset: SystemDicePresetId,
+  customAttrsCsv: string
+): SheetBlock[] {
+  const ts = Date.now().toString(36);
+  const rawNames = customAttrsCsv
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const attrNames =
+    rawNames.length > 0
+      ? rawNames
+      : preset === '1d100'
+        ? ['Força', 'Destreza', 'Inteligência', 'Poder', 'Investigação']
+        : ['Força', 'Agilidade', 'Intelecto', 'Vigor', 'Presença'];
+
+  const defaultVal = preset === '1d100' ? 50 : 2;
+
+  const bars: SheetBlock[] = [
+    {
+      id: `blk_${ts}_hp`,
+      type: 'bar',
+      section: 'Recursos',
+      label: 'Vida',
+      current: 15,
+      max: 15,
+      barColor: '#8f2d2d',
+    },
+    {
+      id: `blk_${ts}_energy`,
+      type: 'bar',
+      section: 'Recursos',
+      label: 'Energia / Sanidade',
+      current: 10,
+      max: 10,
+      barColor: '#37546e',
+    },
+  ];
+
+  const attrs: SheetBlock[] = attrNames.map((name, idx) => ({
+    id: `blk_${ts}_attr_${idx}`,
+    type: 'attribute',
+    section: 'Atributos',
+    label: name,
+    value: defaultVal,
+    diceType: preset,
+    formula: buildAutoItemFormula({
+      diceType: preset,
+      linkedAttribute: name,
+    }),
+  }));
+
+  const firstAttr = attrNames[0] || 'Força';
+  const starterItem: SheetBlock = {
+    id: `blk_${ts}_item_0`,
+    type: 'item',
+    section: 'Itens & Habilidades',
+    label: 'Arma / Habilidade Principal',
+    linkedAttribute: firstAttr,
+    secondaryAttribute: '',
+    diceType: preset,
+    bonus: 0,
+    formula: buildAutoItemFormula({
+      diceType: preset,
+      linkedAttribute: firstAttr,
+      bonus: 0,
+    }),
+    damageLabel: 'Dano',
+    damageFormula: preset === '1d100' ? '1d8' : `1d8 + {${firstAttr}}`,
+    text: 'Rola automaticamente usando o atributo escolhido.',
+  };
+
+  return [...bars, ...attrs, starterItem];
+}
+
 export function CharacterSheetPanel({
   uploadContext,
   sheets,
@@ -63,11 +177,26 @@ export function CharacterSheetPanel({
   const [selectedId, setSelectedId] = useState<string>(sheets[0]?.id || '');
   const [showNewDrawer, setShowNewDrawer] = useState(false);
 
-  // Blank sheet form
+  // Blank / Custom System sheet creator form
   const [newName, setNewName] = useState('');
   const [newSystem, setNewSystem] = useState('');
+  const [newSystemPreset, setNewSystemPreset] = useState<SystemDicePresetId>('1d20');
+  const [newAttrsCsv, setNewAttrsCsv] = useState('Força, Agilidade, Intelecto, Vigor, Presença');
 
-  // PDF import / AI sheet builder state
+  // Quick add attribute / item states inside active sheet
+  const [quickAttrName, setQuickAttrName] = useState('');
+  const [quickAttrVal, setQuickAttrVal] = useState<number>(2);
+  const [showItemCreator, setShowItemCreator] = useState(false);
+  const [itemName, setItemName] = useState('');
+  const [itemAttr1, setItemAttr1] = useState('');
+  const [itemAttr2, setItemAttr2] = useState('');
+  const [itemDice, setItemDice] = useState<string>('1d20');
+  const [itemBonus, setItemBonus] = useState<number>(0);
+  const [itemDamage, setItemDamage] = useState('');
+  const [itemNotes, setItemNotes] = useState('');
+  const [expandedItemConfigId, setExpandedItemConfigId] = useState<string | null>(null);
+
+  // PDF import state
   const [importingPdf, setImportingPdf] = useState(false);
   const [importStatus, setImportStatus] = useState('');
   const [uploadingPdf, setUploadingPdf] = useState(false);
@@ -78,11 +207,25 @@ export function CharacterSheetPanel({
 
   const activeSheet = sheets.find((s) => s.id === selectedId) || sheets[0] || null;
 
+  // All rollable attributes on the active sheet (available to link to items!)
+  const sheetAttributes = useMemo(() => {
+    if (!activeSheet) return [];
+    return activeSheet.blocks.filter((b) => b.type === 'attribute');
+  }, [activeSheet]);
+
   useEffect(() => {
     if (!activeSheet && sheets.length > 0) {
       setSelectedId(sheets[0].id);
     }
   }, [sheets, activeSheet]);
+
+  useEffect(() => {
+    if (sheetAttributes.length > 0 && !itemAttr1) {
+      setItemAttr1(sheetAttributes[0].label);
+      const inferredDice = sheetAttributes[0].diceType || '1d20';
+      setItemDice(inferredDice);
+    }
+  }, [sheetAttributes, itemAttr1]);
 
   useEffect(() => {
     let alive = true;
@@ -131,7 +274,15 @@ export function CharacterSheetPanel({
     const map = new Map<string, Array<{ block: SheetBlock; index: number }>>();
 
     activeSheet.blocks.forEach((block, index) => {
-      const sec = (block.section || 'Geral').trim() || 'Geral';
+      const defaultSec =
+        block.type === 'item'
+          ? 'Itens & Habilidades'
+          : block.type === 'attribute'
+            ? 'Atributos'
+            : block.type === 'bar' || block.type === 'counter'
+              ? 'Recursos'
+              : 'Notas';
+      const sec = (block.section || defaultSec).trim() || defaultSec;
       let bucket = map.get(sec);
       if (!bucket) {
         bucket = [];
@@ -147,17 +298,19 @@ export function CharacterSheetPanel({
   async function handleCreateBlank(e: React.FormEvent) {
     e.preventDefault();
     if (!newName.trim()) return;
+    const starterBlocks = buildStarterBlocksForPreset(newSystemPreset, newAttrsCsv);
     const id = await onCreateSheet({
       name: newName.trim(),
-      subtitle: newSystem.trim() || 'Ficha Livre',
+      subtitle: newSystem.trim() || 'Sistema Personalizado',
       systemName: newSystem.trim() || 'Sistema Livre',
       mode: 'modular',
+      blocks: starterBlocks,
     });
     setSelectedId(id);
     setNewName('');
     setNewSystem('');
     setShowNewDrawer(false);
-    onNotify('Ficha livre criada.');
+    onNotify('Ficha personalizada criada com atributos e rolagens automáticas.');
   }
 
   async function handleDuplicateCurrent() {
@@ -186,7 +339,7 @@ export function CharacterSheetPanel({
     }
 
     setImportingPdf(true);
-    setImportStatus('Lendo PDF e salvando na nuvem da campanha...');
+    setImportStatus('Lendo PDF e montando atributos e rolagens...');
     try {
       const [uploadRes, parsed] = await Promise.all([
         uploadMediaFile(file, uploadContext),
@@ -221,19 +374,98 @@ export function CharacterSheetPanel({
 
   function updateBlock(blockId: string, patch: Partial<SheetBlock>) {
     if (!activeSheet) return;
-    const blocks = activeSheet.blocks.map((b) => (b.id === blockId ? { ...b, ...patch } : b));
+    const blocks = activeSheet.blocks.map((b) => {
+      if (b.id !== blockId) return b;
+      const merged = { ...b, ...patch };
+      // Automatically keep item/attribute formula in sync when attribute link, diceType, or bonus changes
+      if (
+        (merged.type === 'item' || merged.type === 'attribute') &&
+        ('linkedAttribute' in patch ||
+          'secondaryAttribute' in patch ||
+          'diceType' in patch ||
+          'bonus' in patch ||
+          (merged.type === 'attribute' && 'label' in patch))
+      ) {
+        merged.formula = buildAutoItemFormula({
+          diceType: merged.diceType || '1d20',
+          linkedAttribute:
+            merged.type === 'attribute' ? merged.label : merged.linkedAttribute,
+          secondaryAttribute: merged.secondaryAttribute,
+          bonus: merged.bonus,
+        });
+      }
+      return merged;
+    });
     patchSheet({ ...activeSheet, blocks });
+  }
+
+  function handleQuickAddAttribute(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activeSheet || !quickAttrName.trim()) return;
+    const label = quickAttrName.trim();
+    const existingAttr = sheetAttributes[0];
+    const dicePreset = existingAttr?.diceType || '1d20';
+    const newBlock: SheetBlock = {
+      id: `blk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+      type: 'attribute',
+      section: 'Atributos',
+      label,
+      value: quickAttrVal,
+      diceType: dicePreset,
+      formula: buildAutoItemFormula({
+        diceType: dicePreset,
+        linkedAttribute: label,
+      }),
+    };
+    patchSheet({ ...activeSheet, blocks: [...activeSheet.blocks, newBlock] });
+    setQuickAttrName('');
+    onNotify(`Atributo "${label}" adicionado.`);
+  }
+
+  function handleCreateCustomItem(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activeSheet || !itemName.trim()) return;
+    const label = itemName.trim();
+    const formula = buildAutoItemFormula({
+      diceType: itemDice,
+      linkedAttribute: itemAttr1,
+      secondaryAttribute: itemAttr2,
+      bonus: itemBonus,
+    });
+    const newBlock: SheetBlock = {
+      id: `itm_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+      type: 'item',
+      section: 'Itens & Habilidades',
+      label,
+      linkedAttribute: itemAttr1,
+      secondaryAttribute: itemAttr2,
+      diceType: itemDice,
+      bonus: itemBonus,
+      formula,
+      damageLabel: 'Dano',
+      damageFormula: itemDamage.trim(),
+      text: itemNotes.trim(),
+    };
+    patchSheet({ ...activeSheet, blocks: [...activeSheet.blocks, newBlock] });
+    setItemName('');
+    setItemBonus(0);
+    setItemDamage('');
+    setItemNotes('');
+    setShowItemCreator(false);
+    onNotify(`Item "${label}" adicionado com rolagem automática!`);
   }
 
   function addBlock(type: SheetBlockType) {
     if (!activeSheet) return;
     const id = `blk_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`;
+    const firstAttr = sheetAttributes[0]?.label || '';
+    const inferredDice = sheetAttributes[0]?.diceType || '1d20';
     const defaults: Record<SheetBlockType, SheetBlock> = {
       bar: {
         id,
         type: 'bar',
         section: 'Recursos',
-        label: 'Recurso (Vida / Sanidade / Energia)',
+        label: 'Recurso (Vida / Sanidade / Mana)',
         current: 10,
         max: 10,
         barColor: '#8f2d2d',
@@ -243,8 +475,30 @@ export function CharacterSheetPanel({
         type: 'attribute',
         section: 'Atributos',
         label: 'Novo Atributo',
-        value: 2,
-        formula: '1d20 + {Novo Atributo}',
+        value: inferredDice === '1d100' ? 50 : 2,
+        diceType: inferredDice,
+        formula: buildAutoItemFormula({
+          diceType: inferredDice,
+          linkedAttribute: 'Novo Atributo',
+        }),
+      },
+      item: {
+        id,
+        type: 'item',
+        section: 'Itens & Habilidades',
+        label: 'Novo Item / Habilidade',
+        linkedAttribute: firstAttr,
+        secondaryAttribute: '',
+        diceType: inferredDice,
+        bonus: 0,
+        formula: buildAutoItemFormula({
+          diceType: inferredDice,
+          linkedAttribute: firstAttr,
+          bonus: 0,
+        }),
+        damageLabel: 'Dano',
+        damageFormula: firstAttr ? `1d8 + {${firstAttr}}` : '1d8',
+        text: '',
       },
       counter: {
         id,
@@ -258,11 +512,14 @@ export function CharacterSheetPanel({
         id,
         type: 'text',
         section: 'Notas',
-        label: 'Equipamento / Habilidades',
+        label: 'Anotações / Inventário',
         text: '',
       },
     };
     patchSheet({ ...activeSheet, blocks: [...activeSheet.blocks, defaults[type]] });
+    if (type === 'item') {
+      setExpandedItemConfigId(id);
+    }
   }
 
   function removeBlock(blockId: string) {
@@ -387,74 +644,87 @@ export function CharacterSheetPanel({
         </button>
       </div>
 
-      {/* Create / Import PDF Sheet Drawer (Zero Hardcoded RPG Systems) */}
+      {/* Universal Custom RPG Sheet Builder & PDF Importer Drawer */}
       {showNewDrawer && (
-        <div className="p-4 border-b vtt-border vtt-canvas space-y-4">
-          {/* Option 1: Smart PDF Import */}
-          <div className="border vtt-border vtt-surface p-3.5 space-y-2.5">
-            <div className="flex items-start gap-2">
-              <Sparkles className="w-4 h-4 vtt-accent-text shrink-0 mt-0.5" />
-              <div>
-                <p className="text-xs font-bold font-typewriter">
-                  Importar PDF (Auto-montar ficha)
-                </p>
-                <p className="text-[11px] vtt-muted leading-relaxed mt-0.5">
-                  Envie a ficha ou livro em PDF de qualquer RPG. O sistema identifica as regras, extrai atributos, barras e já cria os botões de rolagem prontos.
-                </p>
+        <div className="p-4 border-b vtt-border vtt-canvas space-y-4 overflow-y-auto max-h-[80vh]">
+          {/* Option 1: Smart Custom RPG System Sheet Builder */}
+          <form onSubmit={handleCreateBlank} className="space-y-3 border vtt-border vtt-surface p-3.5">
+            <p className="text-xs font-bold font-typewriter">
+              Criar Ficha de Sistema Personalizado
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input
+                type="text"
+                required
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                maxLength={100}
+                placeholder="Nome do personagem"
+                className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
+              />
+              <input
+                type="text"
+                value={newSystem}
+                onChange={(e) => setNewSystem(e.target.value)}
+                maxLength={80}
+                placeholder="Nome do sistema (ex: Meu RPG)"
+                className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-semibold block">
+                Como funcionam os dados do seu sistema?
+              </span>
+              <div className="grid grid-cols-2 gap-1.5">
+                {SYSTEM_DICE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => {
+                      setNewSystemPreset(preset.id);
+                      if (preset.id === '1d100') {
+                        setNewAttrsCsv('Força, Destreza, Inteligência, Poder, Investigação');
+                      }
+                    }}
+                    className={`p-2 text-left border transition-colors ${
+                      newSystemPreset === preset.id
+                        ? 'vtt-accent-btn border-transparent'
+                        : 'vtt-canvas vtt-border'
+                    }`}
+                  >
+                    <p className="text-[11px] font-semibold">{preset.label}</p>
+                    <p
+                      className={`text-[10px] truncate ${
+                        newSystemPreset === preset.id ? 'opacity-90' : 'vtt-muted'
+                      }`}
+                    >
+                      {preset.shortDesc}
+                    </p>
+                  </button>
+                ))}
               </div>
             </div>
 
-            <label className="w-full py-2.5 px-3 text-xs font-semibold vtt-accent-btn cursor-pointer flex items-center justify-center gap-2">
-              {importingPdf ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>{importStatus || 'Processando PDF...'}</span>
-                </>
-              ) : (
-                <>
-                  <FileUp className="w-4 h-4" />
-                  <span>Escolher PDF da ficha</span>
-                </>
-              )}
+            <label className="block space-y-1">
+              <span className="text-[11px] font-semibold">
+                Atributos iniciais (separados por vírgula)
+              </span>
               <input
-                type="file"
-                accept="application/pdf"
-                className="hidden"
-                disabled={importingPdf}
-                onChange={(e) => {
-                  void handleSmartPdfImport(e.target.files?.[0]);
-                  e.target.value = '';
-                }}
+                type="text"
+                value={newAttrsCsv}
+                onChange={(e) => setNewAttrsCsv(e.target.value)}
+                placeholder="Força, Agilidade, Intelecto, Vigor, Presença"
+                className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
               />
             </label>
-          </div>
 
-          {/* Option 2: Blank Custom Freeform Sheet */}
-          <form onSubmit={handleCreateBlank} className="space-y-2.5">
-            <p className="text-xs font-semibold">Ou criar ficha livre do zero</p>
-            <input
-              type="text"
-              required
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              maxLength={100}
-              placeholder="Nome do personagem"
-              className="w-full px-3 py-2 text-xs border vtt-border vtt-surface"
-            />
-            <input
-              type="text"
-              value={newSystem}
-              onChange={(e) => setNewSystem(e.target.value)}
-              maxLength={80}
-              placeholder="Nome do sistema (opcional, ex: Meu Sistema)"
-              className="w-full px-3 py-2 text-xs border vtt-border vtt-surface"
-            />
             <div className="flex items-center justify-between gap-2 pt-1">
               {activeSheet ? (
                 <button
                   type="button"
                   onClick={() => void handleDuplicateCurrent()}
-                  className="px-3 py-1.5 text-xs border vtt-border vtt-surface flex items-center gap-1.5"
+                  className="px-3 py-1.5 text-xs border vtt-border vtt-canvas flex items-center gap-1.5"
                 >
                   <Copy className="w-3.5 h-3.5" />
                   Duplicar atual
@@ -475,11 +745,44 @@ export function CharacterSheetPanel({
                   disabled={!newName.trim() || importingPdf}
                   className="px-4 py-1.5 text-xs font-semibold vtt-accent-btn disabled:opacity-50"
                 >
-                  Criar livre
+                  Criar ficha pronta
                 </button>
               </div>
             </div>
           </form>
+
+          {/* Option 2: Smart PDF Import */}
+          <div className="border vtt-border vtt-surface p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 vtt-accent-text shrink-0" />
+                <span className="text-xs font-semibold">Ou importar PDF (auto-montar)</span>
+              </div>
+              <label className="py-1.5 px-3 text-xs font-semibold border vtt-border vtt-canvas hover:vtt-subtle cursor-pointer flex items-center gap-1.5 whitespace-nowrap">
+                {importingPdf ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>{importStatus || 'Lendo...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <FileUp className="w-3.5 h-3.5" />
+                    <span>Escolher PDF</span>
+                  </>
+                )}
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  className="hidden"
+                  disabled={importingPdf}
+                  onChange={(e) => {
+                    void handleSmartPdfImport(e.target.files?.[0]);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
+          </div>
         </div>
       )}
 
@@ -488,13 +791,20 @@ export function CharacterSheetPanel({
         <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4">
           <FileText className="w-8 h-8 vtt-muted" />
           <div className="space-y-1.5 max-w-xs">
-            <p className="text-sm font-bold font-typewriter">Suas fichas, no seu sistema</p>
+            <p className="text-sm font-bold font-typewriter">Fichas Universais</p>
             <p className="text-xs vtt-muted leading-relaxed">
-              Importe um PDF de qualquer RPG para montar a ficha automaticamente com rolagens prontas, ou construa sua própria ficha livre bloco por bloco.
+              Crie fichas para qualquer sistema personalizado com itens que rolam automaticamente com base nos seus atributos, ou importe um PDF.
             </p>
           </div>
           <div className="flex flex-col sm:flex-row items-center gap-2">
-            <label className="px-4 py-2.5 text-xs font-semibold vtt-accent-btn cursor-pointer flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowNewDrawer(true)}
+              className="px-4 py-2.5 text-xs font-semibold vtt-accent-btn"
+            >
+              Criar ficha personalizada
+            </button>
+            <label className="px-4 py-2.5 text-xs font-semibold border vtt-border vtt-surface cursor-pointer flex items-center gap-1.5">
               {importingPdf ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -503,7 +813,7 @@ export function CharacterSheetPanel({
               ) : (
                 <>
                   <FileUp className="w-3.5 h-3.5" />
-                  Importar PDF (Auto-montar)
+                  Importar PDF
                 </>
               )}
               <input
@@ -517,13 +827,6 @@ export function CharacterSheetPanel({
                 }}
               />
             </label>
-            <button
-              type="button"
-              onClick={() => setShowNewDrawer(true)}
-              className="px-4 py-2.5 text-xs font-semibold border vtt-border vtt-surface"
-            >
-              Criar do zero
-            </button>
           </div>
         </div>
       ) : (
@@ -531,7 +834,6 @@ export function CharacterSheetPanel({
           {/* Character Header with Local Portrait Photo Upload */}
           <div className="space-y-3 border-b vtt-border pb-3.5">
             <div className="flex items-start gap-3">
-              {/* Portrait Avatar Uploader (NO URL required!) */}
               <label
                 className="relative w-14 h-14 border vtt-border vtt-subtle shrink-0 overflow-hidden cursor-pointer group flex items-center justify-center"
                 title="Enviar foto do personagem"
@@ -572,7 +874,7 @@ export function CharacterSheetPanel({
                     type="text"
                     value={activeSheet.subtitle}
                     onChange={(e) => patchSheet({ ...activeSheet, subtitle: e.target.value })}
-                    placeholder="Classe, arquétipo ou papel"
+                    placeholder="Classe, arquétipo ou origem"
                     className="flex-1 text-xs vtt-muted bg-transparent border-b border-transparent focus:border-current min-w-0"
                   />
                   <input
@@ -700,6 +1002,191 @@ export function CharacterSheetPanel({
             </div>
           ) : (
             <div className="space-y-5">
+              {/* Quick Action Bar: + Item Customizado & + Atributo Rápido */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowItemCreator((v) => !v)}
+                    className="flex-1 py-2 px-3 text-xs font-semibold vtt-accent-btn flex items-center justify-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Swords className="w-3.5 h-3.5" />
+                    + Item / Habilidade com Atributo
+                  </button>
+                </div>
+
+                {/* Visual Custom Item / Skill Creator (No manual formula writing needed!) */}
+                {showItemCreator && (
+                  <form
+                    onSubmit={handleCreateCustomItem}
+                    className="border vtt-border p-3.5 vtt-canvas space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold font-typewriter flex items-center gap-1.5">
+                        <Swords className="w-3.5 h-3.5 vtt-accent-text" />
+                        Novo Item, Arma ou Habilidade
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowItemCreator(false)}
+                        className="text-[11px] vtt-muted"
+                      >
+                        Fechar
+                      </button>
+                    </div>
+
+                    <input
+                      type="text"
+                      required
+                      value={itemName}
+                      onChange={(e) => setItemName(e.target.value)}
+                      placeholder="Nome (ex: Espada Longa, Revólver, Feitiço, Furtividade)"
+                      className="w-full px-3 py-2 text-xs border vtt-border vtt-surface"
+                    />
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="space-y-1">
+                        <span className="text-[11px] font-semibold block">
+                          Rolar com Atributo
+                        </span>
+                        <select
+                          value={itemAttr1}
+                          onChange={(e) => setItemAttr1(e.target.value)}
+                          className="w-full px-2 py-2 text-xs border vtt-border vtt-surface"
+                        >
+                          <option value="">Sem atributo</option>
+                          {sheetAttributes.map((attr) => (
+                            <option key={attr.id} value={attr.label}>
+                              {attr.label} ({attr.value ?? 0})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-[11px] font-semibold block">
+                          2º Atributo / Perícia (opc.)
+                        </span>
+                        <select
+                          value={itemAttr2}
+                          onChange={(e) => setItemAttr2(e.target.value)}
+                          className="w-full px-2 py-2 text-xs border vtt-border vtt-surface"
+                        >
+                          <option value="">Nenhum</option>
+                          {sheetAttributes.map((attr) => (
+                            <option key={attr.id} value={attr.label}>
+                              + {attr.label} ({attr.value ?? 0})
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <label className="col-span-2 space-y-1">
+                        <span className="text-[11px] font-semibold block">Regra do Dado</span>
+                        <select
+                          value={itemDice}
+                          onChange={(e) => setItemDice(e.target.value)}
+                          className="w-full px-2 py-2 text-xs border vtt-border vtt-surface"
+                        >
+                          {ITEM_DICE_OPTIONS.map((opt) => (
+                            <option key={opt.id} value={opt.id}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="space-y-1">
+                        <span className="text-[11px] font-semibold block">Bônus Extra</span>
+                        <input
+                          type="number"
+                          value={itemBonus}
+                          onChange={(e) => setItemBonus(Number(e.target.value))}
+                          className="w-full px-2 py-2 text-xs border vtt-border vtt-surface text-center tabular-nums"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold">
+                          Rolagem de Dano / Efeito (opcional)
+                        </span>
+                        {sheetAttributes.length > 0 && (
+                          <div className="flex items-center gap-1 overflow-x-auto">
+                            {sheetAttributes.slice(0, 3).map((a) => (
+                              <button
+                                key={a.id}
+                                type="button"
+                                onClick={() =>
+                                  setItemDamage((prev) =>
+                                    prev ? `${prev} + {${a.label}}` : `1d8 + {${a.label}}`
+                                  )
+                                }
+                                className="px-1.5 py-0.5 text-[10px] border vtt-border vtt-surface whitespace-nowrap"
+                                title={`Somar ${a.label} no dano`}
+                              >
+                                + {a.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        value={itemDamage}
+                        onChange={(e) => setItemDamage(e.target.value)}
+                        placeholder="Ex: 1d8 + {Força} ou 2d6"
+                        className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface font-mono"
+                      />
+                    </div>
+
+                    <input
+                      type="text"
+                      value={itemNotes}
+                      onChange={(e) => setItemNotes(e.target.value)}
+                      placeholder="Notas curtas (ex: Alcance médio, crítico 19-20)"
+                      className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface"
+                    />
+
+                    <button
+                      type="submit"
+                      disabled={!itemName.trim()}
+                      className="w-full py-2 text-xs font-semibold vtt-accent-btn disabled:opacity-50"
+                    >
+                      Adicionar à Ficha
+                    </button>
+                  </form>
+                )}
+
+                {/* Quick 1-Line Add Attribute Form */}
+                <form onSubmit={handleQuickAddAttribute} className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={quickAttrName}
+                    onChange={(e) => setQuickAttrName(e.target.value)}
+                    placeholder="Novo atributo rápido (ex: Destreza, Luta)..."
+                    className="flex-1 min-w-0 px-2.5 py-1.5 text-xs border vtt-border vtt-canvas"
+                  />
+                  <input
+                    type="number"
+                    value={quickAttrVal}
+                    onChange={(e) => setQuickAttrVal(Number(e.target.value))}
+                    className="w-14 px-2 py-1.5 text-xs text-center tabular-nums border vtt-border vtt-canvas"
+                    title="Valor do atributo"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!quickAttrName.trim()}
+                    className="px-2.5 py-1.5 text-xs font-semibold border vtt-border vtt-surface hover:vtt-subtle disabled:opacity-40 whitespace-nowrap shrink-0"
+                  >
+                    + Atributo
+                  </button>
+                </form>
+              </div>
+
               {groupedBlocks.map((group) => (
                 <section key={group.section} className="space-y-2.5">
                   <h4 className="text-[11px] font-bold uppercase tracking-wider vtt-muted border-b vtt-border pb-1">
@@ -707,235 +1194,507 @@ export function CharacterSheetPanel({
                   </h4>
 
                   <div className="space-y-2.5">
-                    {group.items.map(({ block, index }) => (
-                      <div key={block.id} className="border vtt-border p-3 space-y-2.5 vtt-canvas">
-                        {/* Block Header */}
-                        <div className="flex items-center justify-between gap-2">
-                          <input
-                            type="text"
-                            value={block.label}
-                            onChange={(e) => updateBlock(block.id, { label: e.target.value })}
-                            className="flex-1 text-xs font-bold bg-transparent border-b border-transparent focus:border-current min-w-0"
-                          />
-                          <div className="flex items-center gap-0.5 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => moveBlock(index, -1)}
-                              disabled={index === 0}
-                              className="p-1 vtt-muted hover:opacity-100 disabled:opacity-30"
-                              aria-label="Mover para cima"
-                            >
-                              <ArrowUp className="w-3 h-3" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => moveBlock(index, 1)}
-                              disabled={index === activeSheet.blocks.length - 1}
-                              className="p-1 vtt-muted hover:opacity-100 disabled:opacity-30"
-                              aria-label="Mover para baixo"
-                            >
-                              <ArrowDown className="w-3 h-3" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => removeBlock(block.id)}
-                              className="p-1 vtt-muted hover:text-red-700"
-                              aria-label="Remover bloco"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
-                        </div>
+                    {group.items.map(({ block, index }) => {
+                      const isItemExpanded = expandedItemConfigId === block.id;
+                      const autoItemFormula =
+                        block.formula ||
+                        buildAutoItemFormula({
+                          diceType: block.diceType || '1d20',
+                          linkedAttribute:
+                            block.type === 'attribute' ? block.label : block.linkedAttribute,
+                          secondaryAttribute: block.secondaryAttribute,
+                          bonus: block.bonus,
+                        });
 
-                        {/* Resource Bar */}
-                        {block.type === 'bar' && (
-                          <div className="space-y-2">
-                            <div className="h-2.5 w-full vtt-subtle overflow-hidden border vtt-border">
-                              <div
-                                className="h-full transition-all duration-150"
-                                style={{
-                                  width: `${Math.max(
-                                    0,
-                                    Math.min(
-                                      100,
-                                      ((block.current || 0) / Math.max(1, block.max || 1)) * 100
-                                    )
-                                  )}%`,
-                                  backgroundColor: block.barColor || 'var(--accent-primary)',
-                                }}
-                              />
-                            </div>
-                            <div className="flex items-center gap-1 flex-wrap">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateBlock(block.id, {
-                                    current: Math.max(0, (block.current || 0) - 5),
-                                  })
-                                }
-                                className="px-2 py-1 text-[11px] border vtt-border tabular-nums"
-                              >
-                                -5
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateBlock(block.id, {
-                                    current: Math.max(0, (block.current || 0) - 1),
-                                  })
-                                }
-                                className="p-1.5 border vtt-border"
-                                aria-label="Diminuir 1"
-                              >
-                                <Minus className="w-3 h-3" />
-                              </button>
-                              <input
-                                type="number"
-                                value={block.current ?? 0}
-                                onChange={(e) =>
-                                  updateBlock(block.id, { current: Number(e.target.value) })
-                                }
-                                className="w-14 px-1.5 py-1 text-xs text-center font-bold tabular-nums border vtt-border vtt-surface"
-                              />
-                              <span className="text-xs vtt-muted">/</span>
-                              <input
-                                type="number"
-                                value={block.max ?? 10}
-                                onChange={(e) =>
-                                  updateBlock(block.id, { max: Math.max(1, Number(e.target.value)) })
-                                }
-                                className="w-14 px-1.5 py-1 text-xs text-center tabular-nums border vtt-border vtt-surface"
-                              />
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateBlock(block.id, { current: (block.current || 0) + 1 })
-                                }
-                                className="p-1.5 border vtt-border"
-                                aria-label="Aumentar 1"
-                              >
-                                <Plus className="w-3 h-3" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateBlock(block.id, { current: (block.current || 0) + 5 })
-                                }
-                                className="px-2 py-1 text-[11px] border vtt-border tabular-nums"
-                              >
-                                +5
-                              </button>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Rollable Attribute / Skill */}
-                        {block.type === 'attribute' && (
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              value={block.value ?? 0}
-                              onChange={(e) =>
-                                updateBlock(block.id, { value: Number(e.target.value) })
-                              }
-                              className="w-16 px-2 py-2 text-sm font-bold text-center tabular-nums border vtt-border vtt-surface"
-                              aria-label={`Valor de ${block.label}`}
-                            />
+                      return (
+                        <div key={block.id} className="border vtt-border p-3 space-y-2.5 vtt-canvas">
+                          {/* Block Header */}
+                          <div className="flex items-center justify-between gap-2">
                             <input
                               type="text"
-                              value={block.formula || ''}
-                              onChange={(e) => updateBlock(block.id, { formula: e.target.value })}
-                              placeholder="Ex: 1d20 + {Força}, 1d100 <= {Perícia}, 5d10>=6"
-                              className="flex-1 px-2.5 py-2 text-xs border vtt-border vtt-surface min-w-0 font-mono"
+                              value={block.label}
+                              onChange={(e) => updateBlock(block.id, { label: e.target.value })}
+                              className="flex-1 text-xs font-bold bg-transparent border-b border-transparent focus:border-current min-w-0"
                             />
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void onRollFromSheet({
-                                  sheetName: activeSheet.name,
-                                  label: block.label,
-                                  formula: block.formula || `1d20 + {${block.label}}`,
-                                  blocks: activeSheet.blocks,
-                                })
-                              }
-                              className="px-3 py-2 text-xs font-semibold vtt-accent-btn flex items-center gap-1.5 whitespace-nowrap shrink-0"
-                            >
-                              <Dices className="w-3.5 h-3.5" />
-                              Rolar
-                            </button>
+                            <div className="flex items-center gap-0.5 shrink-0">
+                              {(block.type === 'item' || block.type === 'attribute') && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedItemConfigId((cur) =>
+                                      cur === block.id ? null : block.id
+                                    )
+                                  }
+                                  className={`p-1 ${
+                                    isItemExpanded ? 'vtt-accent-text' : 'vtt-muted hover:opacity-100'
+                                  }`}
+                                  title="Configurar atributo e dados desta rolagem"
+                                >
+                                  <SlidersHorizontal className="w-3 h-3" />
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => moveBlock(index, -1)}
+                                disabled={index === 0}
+                                className="p-1 vtt-muted hover:opacity-100 disabled:opacity-30"
+                                aria-label="Mover para cima"
+                              >
+                                <ArrowUp className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => moveBlock(index, 1)}
+                                disabled={index === activeSheet.blocks.length - 1}
+                                className="p-1 vtt-muted hover:opacity-100 disabled:opacity-30"
+                                aria-label="Mover para baixo"
+                              >
+                                <ArrowDown className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => removeBlock(block.id)}
+                                className="p-1 vtt-muted hover:text-red-700"
+                                aria-label="Remover bloco"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
-                        )}
 
-                        {/* Counter / Checkbox Slots */}
-                        {block.type === 'counter' && (
-                          <div className="flex items-center justify-between gap-2 flex-wrap">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              {Array.from({
-                                length: Math.min(20, Math.max(1, block.maxCount || 5)),
-                              }).map((_, i) => {
-                                const filled = i < (block.count || 0);
-                                return (
+                          {/* Resource Bar */}
+                          {block.type === 'bar' && (
+                            <div className="space-y-2">
+                              <div className="h-2.5 w-full vtt-subtle overflow-hidden border vtt-border">
+                                <div
+                                  className="h-full transition-all duration-150"
+                                  style={{
+                                    width: `${Math.max(
+                                      0,
+                                      Math.min(
+                                        100,
+                                        ((block.current || 0) / Math.max(1, block.max || 1)) * 100
+                                      )
+                                    )}%`,
+                                    backgroundColor: block.barColor || 'var(--accent-primary)',
+                                  }}
+                                />
+                              </div>
+                              <div className="flex items-center gap-1 flex-wrap">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateBlock(block.id, {
+                                      current: Math.max(0, (block.current || 0) - 5),
+                                    })
+                                  }
+                                  className="px-2 py-1 text-[11px] border vtt-border tabular-nums"
+                                >
+                                  -5
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateBlock(block.id, {
+                                      current: Math.max(0, (block.current || 0) - 1),
+                                    })
+                                  }
+                                  className="p-1.5 border vtt-border"
+                                  aria-label="Diminuir 1"
+                                >
+                                  <Minus className="w-3 h-3" />
+                                </button>
+                                <input
+                                  type="number"
+                                  value={block.current ?? 0}
+                                  onChange={(e) =>
+                                    updateBlock(block.id, { current: Number(e.target.value) })
+                                  }
+                                  className="w-14 px-1.5 py-1 text-xs text-center font-bold tabular-nums border vtt-border vtt-surface"
+                                />
+                                <span className="text-xs vtt-muted">/</span>
+                                <input
+                                  type="number"
+                                  value={block.max ?? 10}
+                                  onChange={(e) =>
+                                    updateBlock(block.id, {
+                                      max: Math.max(1, Number(e.target.value)),
+                                    })
+                                  }
+                                  className="w-14 px-1.5 py-1 text-xs text-center tabular-nums border vtt-border vtt-surface"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateBlock(block.id, { current: (block.current || 0) + 1 })
+                                  }
+                                  className="p-1.5 border vtt-border"
+                                  aria-label="Aumentar 1"
+                                >
+                                  <Plus className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateBlock(block.id, { current: (block.current || 0) + 5 })
+                                  }
+                                  className="px-2 py-1 text-[11px] border vtt-border tabular-nums"
+                                >
+                                  +5
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Rollable Attribute / Skill */}
+                          {block.type === 'attribute' && (
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2">
+                                <div className="flex items-center border vtt-border vtt-surface">
                                   <button
-                                    key={i}
                                     type="button"
                                     onClick={() =>
-                                      updateBlock(block.id, {
-                                        count:
-                                          filled && i === (block.count || 0) - 1 ? i : i + 1,
+                                      updateBlock(block.id, { value: (block.value ?? 0) - 1 })
+                                    }
+                                    className="px-2 py-1.5 text-xs vtt-muted hover:opacity-100"
+                                  >
+                                    -
+                                  </button>
+                                  <input
+                                    type="number"
+                                    value={block.value ?? 0}
+                                    onChange={(e) =>
+                                      updateBlock(block.id, { value: Number(e.target.value) })
+                                    }
+                                    className="w-12 py-1.5 text-sm font-bold text-center tabular-nums bg-transparent"
+                                    aria-label={`Valor de ${block.label}`}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      updateBlock(block.id, { value: (block.value ?? 0) + 1 })
+                                    }
+                                    className="px-2 py-1.5 text-xs vtt-muted hover:opacity-100"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+
+                                <select
+                                  value={block.diceType || '1d20'}
+                                  onChange={(e) =>
+                                    updateBlock(block.id, { diceType: e.target.value })
+                                  }
+                                  className="flex-1 min-w-0 px-2 py-2 text-xs border vtt-border vtt-surface"
+                                  title="Tipo de dado deste atributo"
+                                >
+                                  {ITEM_DICE_OPTIONS.map((opt) => (
+                                    <option key={opt.id} value={opt.id}>
+                                      {opt.label}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void onRollFromSheet({
+                                      sheetName: activeSheet.name,
+                                      label: block.label,
+                                      formula: autoItemFormula,
+                                      blocks: activeSheet.blocks,
+                                    })
+                                  }
+                                  className="px-3 py-2 text-xs font-semibold vtt-accent-btn flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                                >
+                                  <Dices className="w-3.5 h-3.5" />
+                                  Rolar
+                                </button>
+                              </div>
+
+                              {isItemExpanded && (
+                                <input
+                                  type="text"
+                                  value={block.formula || autoItemFormula}
+                                  onChange={(e) =>
+                                    updateBlock(block.id, { formula: e.target.value })
+                                  }
+                                  placeholder="Fórmula customizada (ex: 1d20 + {Força})"
+                                  className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface font-mono"
+                                />
+                              )}
+                            </div>
+                          )}
+
+                          {/* Universal Custom Item / Weapon / Ability linked to Chosen Attributes */}
+                          {block.type === 'item' && (
+                            <div className="space-y-2">
+                              {/* Quick Attribute Summary & 1-Click Roll Buttons */}
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5 text-[11px] vtt-muted flex-wrap">
+                                  <span>
+                                    Usa:{' '}
+                                    <strong className="text-stone-900 dark:text-stone-100">
+                                      {block.linkedAttribute || 'Dado puro'}
+                                      {block.secondaryAttribute
+                                        ? ` + ${block.secondaryAttribute}`
+                                        : ''}
+                                    </strong>
+                                  </span>
+                                  {block.bonus ? (
+                                    <span>
+                                      · Bônus{' '}
+                                      <strong className="tabular-nums">
+                                        {block.bonus > 0 ? `+${block.bonus}` : block.bonus}
+                                      </strong>
+                                    </span>
+                                  ) : null}
+                                  <span className="font-mono text-[10px]">
+                                    ({autoItemFormula})
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void onRollFromSheet({
+                                        sheetName: activeSheet.name,
+                                        label: block.label,
+                                        formula: autoItemFormula,
+                                        blocks: activeSheet.blocks,
                                       })
                                     }
-                                    className={`w-6 h-6 border transition-colors ${
-                                      filled
-                                        ? 'vtt-accent-btn border-transparent'
-                                        : 'vtt-surface vtt-border'
-                                    }`}
-                                    aria-label={`Marcador ${i + 1}`}
-                                  />
-                                );
-                              })}
-                            </div>
-                            <div className="flex items-center gap-1 text-[11px] vtt-muted tabular-nums">
-                              <span>
-                                {block.count || 0}/{block.maxCount || 5}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateBlock(block.id, {
-                                    maxCount: Math.max(1, (block.maxCount || 5) - 1),
-                                  })
-                                }
-                                className="px-1.5 py-0.5 border vtt-border"
-                              >
-                                -
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateBlock(block.id, {
-                                    maxCount: Math.min(20, (block.maxCount || 5) + 1),
-                                  })
-                                }
-                                className="px-1.5 py-0.5 border vtt-border"
-                              >
-                                +
-                              </button>
-                            </div>
-                          </div>
-                        )}
+                                    className="px-3 py-1.5 text-xs font-semibold vtt-accent-btn flex items-center gap-1.5 whitespace-nowrap"
+                                  >
+                                    <Dices className="w-3.5 h-3.5" />
+                                    Rolar
+                                  </button>
 
-                        {/* Free Text */}
-                        {block.type === 'text' && (
-                          <textarea
-                            value={block.text || ''}
-                            onChange={(e) => updateBlock(block.id, { text: e.target.value })}
-                            rows={3}
-                            placeholder="Escreva habilidades, equipamentos, magias ou anotações..."
-                            className="w-full px-2.5 py-2 text-xs border vtt-border vtt-surface resize-y leading-relaxed"
-                          />
-                        )}
-                      </div>
-                    ))}
+                                  {block.damageFormula && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void onRollFromSheet({
+                                          sheetName: activeSheet.name,
+                                          label: `${block.label} (${block.damageLabel || 'Dano'})`,
+                                          formula: block.damageFormula || '1d6',
+                                          blocks: activeSheet.blocks,
+                                        })
+                                      }
+                                      className="px-2.5 py-1.5 text-xs font-semibold border vtt-border vtt-surface hover:vtt-subtle flex items-center gap-1 whitespace-nowrap"
+                                    >
+                                      <Zap className="w-3.5 h-3.5 vtt-accent-text" />
+                                      {block.damageLabel || 'Dano'}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {block.text && !isItemExpanded && (
+                                <p className="text-[11px] vtt-muted leading-relaxed">
+                                  {block.text}
+                                </p>
+                              )}
+
+                              {/* Inline Visual Attribute & Dice Selector when expanded */}
+                              {isItemExpanded && (
+                                <div className="pt-2 border-t vtt-border space-y-2">
+                                  <div className="grid grid-cols-2 gap-1.5">
+                                    <label className="space-y-0.5">
+                                      <span className="text-[10px] vtt-muted">Atributo Principal</span>
+                                      <select
+                                        value={block.linkedAttribute || ''}
+                                        onChange={(e) =>
+                                          updateBlock(block.id, {
+                                            linkedAttribute: e.target.value,
+                                          })
+                                        }
+                                        className="w-full px-2 py-1.5 text-xs border vtt-border vtt-surface"
+                                      >
+                                        <option value="">Sem atributo</option>
+                                        {sheetAttributes.map((attr) => (
+                                          <option key={attr.id} value={attr.label}>
+                                            {attr.label} ({attr.value ?? 0})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+
+                                    <label className="space-y-0.5">
+                                      <span className="text-[10px] vtt-muted">2º Atributo (opc.)</span>
+                                      <select
+                                        value={block.secondaryAttribute || ''}
+                                        onChange={(e) =>
+                                          updateBlock(block.id, {
+                                            secondaryAttribute: e.target.value,
+                                          })
+                                        }
+                                        className="w-full px-2 py-1.5 text-xs border vtt-border vtt-surface"
+                                      >
+                                        <option value="">Nenhum</option>
+                                        {sheetAttributes.map((attr) => (
+                                          <option key={attr.id} value={attr.label}>
+                                            + {attr.label} ({attr.value ?? 0})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </div>
+
+                                  <div className="grid grid-cols-3 gap-1.5">
+                                    <label className="col-span-2 space-y-0.5">
+                                      <span className="text-[10px] vtt-muted">Dado</span>
+                                      <select
+                                        value={block.diceType || '1d20'}
+                                        onChange={(e) =>
+                                          updateBlock(block.id, { diceType: e.target.value })
+                                        }
+                                        className="w-full px-2 py-1.5 text-xs border vtt-border vtt-surface"
+                                      >
+                                        {ITEM_DICE_OPTIONS.map((opt) => (
+                                          <option key={opt.id} value={opt.id}>
+                                            {opt.label}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+
+                                    <label className="space-y-0.5">
+                                      <span className="text-[10px] vtt-muted">Bônus</span>
+                                      <input
+                                        type="number"
+                                        value={block.bonus ?? 0}
+                                        onChange={(e) =>
+                                          updateBlock(block.id, { bonus: Number(e.target.value) })
+                                        }
+                                        className="w-full px-2 py-1.5 text-xs border vtt-border vtt-surface text-center tabular-nums"
+                                      />
+                                    </label>
+                                  </div>
+
+                                  <div className="space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[10px] vtt-muted">
+                                        Fórmula de Dano / Efeito
+                                      </span>
+                                      {sheetAttributes.length > 0 && (
+                                        <div className="flex items-center gap-1">
+                                          {sheetAttributes.slice(0, 3).map((a) => (
+                                            <button
+                                              key={a.id}
+                                              type="button"
+                                              onClick={() =>
+                                                updateBlock(block.id, {
+                                                  damageFormula: block.damageFormula
+                                                    ? `${block.damageFormula} + {${a.label}}`
+                                                    : `1d8 + {${a.label}}`,
+                                                })
+                                              }
+                                              className="px-1.5 py-0.5 text-[10px] border vtt-border vtt-surface"
+                                            >
+                                              + {a.label}
+                                            </button>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <input
+                                      type="text"
+                                      value={block.damageFormula || ''}
+                                      onChange={(e) =>
+                                        updateBlock(block.id, { damageFormula: e.target.value })
+                                      }
+                                      placeholder="Ex: 1d8 + {Força}"
+                                      className="w-full px-2 py-1.5 text-xs border vtt-border vtt-surface font-mono"
+                                    />
+                                  </div>
+
+                                  <input
+                                    type="text"
+                                    value={block.text || ''}
+                                    onChange={(e) =>
+                                      updateBlock(block.id, { text: e.target.value })
+                                    }
+                                    placeholder="Descrição ou propriedades do item..."
+                                    className="w-full px-2 py-1.5 text-xs border vtt-border vtt-surface"
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Counter / Checkbox Slots */}
+                          {block.type === 'counter' && (
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {Array.from({
+                                  length: Math.min(20, Math.max(1, block.maxCount || 5)),
+                                }).map((_, i) => {
+                                  const filled = i < (block.count || 0);
+                                  return (
+                                    <button
+                                      key={i}
+                                      type="button"
+                                      onClick={() =>
+                                        updateBlock(block.id, {
+                                          count:
+                                            filled && i === (block.count || 0) - 1 ? i : i + 1,
+                                        })
+                                      }
+                                      className={`w-6 h-6 border transition-colors ${
+                                        filled
+                                          ? 'vtt-accent-btn border-transparent'
+                                          : 'vtt-surface vtt-border'
+                                      }`}
+                                      aria-label={`Marcador ${i + 1}`}
+                                    />
+                                  );
+                                })}
+                              </div>
+                              <div className="flex items-center gap-1 text-[11px] vtt-muted tabular-nums">
+                                <span>
+                                  {block.count || 0}/{block.maxCount || 5}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateBlock(block.id, {
+                                      maxCount: Math.max(1, (block.maxCount || 5) - 1),
+                                    })
+                                  }
+                                  className="px-1.5 py-0.5 border vtt-border"
+                                >
+                                  -
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    updateBlock(block.id, {
+                                      maxCount: Math.min(20, (block.maxCount || 5) + 1),
+                                    })
+                                  }
+                                  className="px-1.5 py-0.5 border vtt-border"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Free Text */}
+                          {block.type === 'text' && (
+                            <textarea
+                              value={block.text || ''}
+                              onChange={(e) => updateBlock(block.id, { text: e.target.value })}
+                              rows={3}
+                              placeholder="Escreva habilidades, equipamentos, magias ou anotações..."
+                              className="w-full px-2.5 py-2 text-xs border vtt-border vtt-surface resize-y leading-relaxed"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </section>
               ))}
@@ -946,31 +1705,38 @@ export function CharacterSheetPanel({
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
+                    onClick={() => addBlock('item')}
+                    className="py-2 px-2.5 text-xs font-semibold border vtt-border vtt-surface hover:vtt-subtle flex items-center justify-center gap-1.5"
+                  >
+                    <Swords className="w-3.5 h-3.5 vtt-accent-text" /> + Item com Rolagem
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => addBlock('attribute')}
                     className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
                   >
-                    <Plus className="w-3.5 h-3.5" /> Atributo / Rolagem
+                    <Plus className="w-3.5 h-3.5" /> + Atributo
                   </button>
                   <button
                     type="button"
                     onClick={() => addBlock('bar')}
                     className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
                   >
-                    <Plus className="w-3.5 h-3.5" /> Barra de Recurso
+                    <Plus className="w-3.5 h-3.5" /> + Barra (Vida/Mana)
                   </button>
                   <button
                     type="button"
                     onClick={() => addBlock('counter')}
                     className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
                   >
-                    <Plus className="w-3.5 h-3.5" /> Contador / Caixas
+                    <Plus className="w-3.5 h-3.5" /> + Contador / Munição
                   </button>
                   <button
                     type="button"
                     onClick={() => addBlock('text')}
-                    className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
+                    className="col-span-2 py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
                   >
-                    <Plus className="w-3.5 h-3.5" /> Bloco de Texto
+                    <Plus className="w-3.5 h-3.5" /> + Bloco de Texto / Notas
                   </button>
                 </div>
               </div>

@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   BookOpen,
   BrickWall,
+  Brush,
   CloudFog,
   Dices,
   DoorClosed,
@@ -24,13 +25,17 @@ import {
   PanelRightOpen,
   QrCode,
   Radar,
+  Redo2,
   Ruler,
   SlidersHorizontal,
+  Type,
+  Undo2,
   Volume2,
 } from 'lucide-react';
 import type {
   ActiveHandoutProjection,
   AudioTrack,
+  BrushStyleId,
   Campaign,
   CampaignMember,
   CampaignNote,
@@ -50,6 +55,12 @@ import { applyCampaignTheme, DEFAULT_THEME, getSceneEffects, sanitizeTheme } fro
 import { audioEngine } from '../lib/audioEngine';
 import { evaluateDiceFormula, isDiceFormula, type RollMode } from '../lib/diceEngine';
 import { resolveMediaUrl } from '../lib/mediaStore';
+import {
+  loadVaultAssets,
+  removeAssetFromVault,
+  saveAssetToVault,
+  type VaultAssetItem,
+} from '../lib/assetVault';
 import { buildAppUrl } from '../lib/router';
 import {
   activateScene,
@@ -103,6 +114,25 @@ import { RoomQrModal } from '../components/RoomQrModal';
 
 type DrawerTab = 'scenes' | 'sheets' | 'dice' | 'wiki' | 'audio' | 'theme';
 
+interface SceneHistorySnapshot {
+  sceneId: string;
+  tokens: SceneToken[];
+  walls: SceneWall[];
+  fogStrokes: FogStroke[];
+  fogEnabled: boolean;
+  dynamicVision: boolean;
+}
+
+const BRUSH_SWATCHES = [
+  '#ef4444',
+  '#f59e0b',
+  '#10b981',
+  '#38bdf8',
+  '#a855f7',
+  '#fdfbf7',
+  '#141311',
+];
+
 interface GMWorkspaceProps {
   user: User;
   campaignId: string;
@@ -126,11 +156,23 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   const [drawerOpen, setDrawerOpen] = useState(true);
   const [activeTool, setActiveTool] = useState<CanvasTool>('move');
   const [fogBrushRadius, setFogBrushRadius] = useState(0.08);
+  const [brushStyle, setBrushStyle] = useState<BrushStyleId>('pen');
+  const [brushColor, setBrushColor] = useState('#ef4444');
+  const [brushSize, setBrushSize] = useState(5);
   const [showGridPopover, setShowGridPopover] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
   const [previewHandout, setPreviewHandout] = useState(false);
   const [toast, setToast] = useState('');
   const [activeRollAnim, setActiveRollAnim] = useState<ActiveDiceAnimation | null>(null);
+
+  // Asset Vault (Acervo de Fotos & Itens para replicar em 1 clique)
+  const [vaultAssets, setVaultAssets] = useState<VaultAssetItem[]>(() =>
+    loadVaultAssets(campaignId)
+  );
+
+  // Undo / Redo History Stacks (Ctrl+Z / Ctrl+Y)
+  const [undoStack, setUndoStack] = useState<SceneHistorySnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<SceneHistorySnapshot[]>([]);
 
   // Audio playback UI sync
   const [audioIds, setAudioIds] = useState(audioEngine.getActiveTrackIds());
@@ -145,11 +187,16 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   const pendingThemeRef = useRef<CampaignTheme | null>(null);
   const tokenSaveTimerRef = useRef<number | null>(null);
   const pendingTokensRef = useRef<{ scene: Scene; tokens: SceneToken[] } | null>(null);
+  const lastLiveCloudSyncMsRef = useRef<number>(0);
   const liveStateRef = useRef<LiveTableState | null>(null);
 
   useEffect(() => {
     liveStateRef.current = liveState;
   }, [liveState]);
+
+  useEffect(() => {
+    setVaultAssets(loadVaultAssets(campaignId));
+  }, [campaignId]);
 
   function notify(msg: string) {
     setToast(msg);
@@ -159,7 +206,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
   useEffect(() => {
     if (!toast) return;
-    const t = window.setTimeout(() => setToast(''), 3200);
+    const t = window.setTimeout(() => setToast(''), 3000);
     return () => window.clearTimeout(t);
   }, [toast]);
 
@@ -184,12 +231,15 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     return () => {
       unsubs.forEach((u) => u());
       audioEngine.stopAll();
-      // Flush any pending theme/token debounce on unmount
       if (themeSaveTimerRef.current) {
         window.clearTimeout(themeSaveTimerRef.current);
         themeSaveTimerRef.current = null;
         if (pendingThemeRef.current) {
-          void updateCampaignTheme(campaignId, pendingThemeRef.current, liveStateRef.current).catch(() => {});
+          void updateCampaignTheme(
+            campaignId,
+            pendingThemeRef.current,
+            liveStateRef.current
+          ).catch(() => {});
           pendingThemeRef.current = null;
         }
       }
@@ -198,7 +248,13 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         tokenSaveTimerRef.current = null;
         if (pendingTokensRef.current) {
           const { scene, tokens } = pendingTokensRef.current;
-          void updateSceneTokens(campaignId, scene, tokens, true, liveStateRef.current).catch(() => {});
+          void updateSceneTokens(
+            campaignId,
+            scene,
+            tokens,
+            true,
+            liveStateRef.current
+          ).catch(() => {});
           pendingTokensRef.current = null;
         }
       }
@@ -218,12 +274,11 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     [localTheme, campaign?.theme]
   );
 
-  // Apply campaign-specific visual theme & typography immediately
   useEffect(() => {
     applyCampaignTheme(effectiveTheme);
   }, [effectiveTheme]);
 
-  // Preload all scene images in memory for zero-lag switching during tabletop sessions
+  // Preload all scene images in memory for zero-lag switching
   useEffect(() => {
     let alive = true;
     Promise.all(
@@ -256,7 +311,6 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
   const activeSceneForCanvas = useMemo(() => {
     if (!activeScene) return null;
-    // GM sees ALL tokens (including hiddenFromPlayers)
     return {
       ...toLiveSceneSnapshot(activeScene),
       tokens: activeScene.tokens,
@@ -272,13 +326,143 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     [campaignId, campaign?.gmUid, user.uid]
   );
 
-  // Keyboard shortcuts for low-friction GM flow: G = Grid, R = Ruler, V = Move, F = Focus Mode
+  // Record snapshot before mutating active scene so Ctrl+Z / Ctrl+Y works seamlessly
+  function recordUndoSnapshot(scene: Scene) {
+    const snap: SceneHistorySnapshot = {
+      sceneId: scene.id,
+      tokens: scene.tokens || [],
+      walls: scene.walls || [],
+      fogStrokes: scene.fogStrokes || [],
+      fogEnabled: Boolean(scene.fogEnabled),
+      dynamicVision: Boolean(scene.dynamicVision),
+    };
+    setUndoStack((prev) => [...prev.slice(-29), snap]);
+    setRedoStack([]);
+  }
+
+  async function applyHistorySnapshot(snap: SceneHistorySnapshot) {
+    if (!campaign) return;
+    const target = scenes.find((s) => s.id === snap.sceneId);
+    if (!target) return;
+    const restored: Scene = {
+      ...target,
+      tokens: snap.tokens,
+      walls: snap.walls,
+      fogStrokes: snap.fogStrokes,
+      fogEnabled: snap.fogEnabled,
+      dynamicVision: snap.dynamicVision,
+    };
+    setScenes((prev) => prev.map((s) => (s.id === restored.id ? restored : s)));
+    const isActive = activeScene?.id === restored.id;
+    if (isActive && liveStateRef.current) {
+      broadcastLiveState(campaign.id, {
+        ...liveStateRef.current,
+        activeScene: toLiveSceneSnapshot(restored),
+      });
+    }
+    try {
+      await Promise.all([
+        updateSceneTokens(campaign.id, restored, restored.tokens, isActive, liveStateRef.current),
+        updateSceneWalls(
+          campaign.id,
+          restored,
+          restored.walls || [],
+          Boolean(restored.dynamicVision),
+          isActive,
+          liveStateRef.current
+        ),
+        updateSceneFog(
+          campaign.id,
+          restored,
+          restored.fogEnabled,
+          restored.fogStrokes,
+          isActive,
+          liveStateRef.current
+        ),
+      ]);
+    } catch {
+      // Ignore transient errors
+    }
+  }
+
+  function handleUndo() {
+    if (!activeScene || undoStack.length === 0) return;
+    const last = undoStack[undoStack.length - 1];
+    const currentSnap: SceneHistorySnapshot = {
+      sceneId: activeScene.id,
+      tokens: activeScene.tokens || [],
+      walls: activeScene.walls || [],
+      fogStrokes: activeScene.fogStrokes || [],
+      fogEnabled: Boolean(activeScene.fogEnabled),
+      dynamicVision: Boolean(activeScene.dynamicVision),
+    };
+    setUndoStack((prev) => prev.slice(0, -1));
+    setRedoStack((prev) => [...prev.slice(-29), currentSnap]);
+    void applyHistorySnapshot(last);
+    notify('Desfeito (Ctrl+Z)');
+  }
+
+  function handleRedo() {
+    if (!activeScene || redoStack.length === 0) return;
+    const next = redoStack[redoStack.length - 1];
+    const currentSnap: SceneHistorySnapshot = {
+      sceneId: activeScene.id,
+      tokens: activeScene.tokens || [],
+      walls: activeScene.walls || [],
+      fogStrokes: activeScene.fogStrokes || [],
+      fogEnabled: Boolean(activeScene.fogEnabled),
+      dynamicVision: Boolean(activeScene.dynamicVision),
+    };
+    setRedoStack((prev) => prev.slice(0, -1));
+    setUndoStack((prev) => [...prev.slice(-29), currentSnap]);
+    void applyHistorySnapshot(next);
+    notify('Refeito (Ctrl+Y)');
+  }
+
+  function handleSaveTokenToVault(token: SceneToken) {
+    if (!token.imageUrl && !token.mediaId) return;
+    const next = saveAssetToVault(campaignId, {
+      name: token.name || 'Item',
+      imageUrl: token.imageUrl || '',
+      mediaId: token.mediaId || '',
+      defaultKind: token.layerKind === 'image' || token.shape === 'rect' ? 'image' : 'token',
+      widthPx: token.widthPx || token.sizePx || 120,
+      heightPx: token.heightPx || token.sizePx || 120,
+    });
+    setVaultAssets(next);
+  }
+
+  function handleRemoveVaultAsset(assetId: string) {
+    const next = removeAssetFromVault(campaignId, assetId);
+    setVaultAssets(next);
+  }
+
+  // Keyboard shortcuts: Ctrl+Z (Undo), Ctrl+Y / Ctrl+Shift+Z (Redo), V = Move, B = Brush, T = Text, W = Walls, R = Ruler, G = Grid, F = Focus
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
 
+      const isMod = e.ctrlKey || e.metaKey;
       const key = e.key.toLowerCase();
+
+      if (isMod && key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+      if (isMod && key === 'y') {
+        e.preventDefault();
+        handleRedo();
+        return;
+      }
+
+      if (isMod) return;
+
       if (key === 'g' && activeScene) {
         e.preventDefault();
         void handleGridUpdate({ ...activeScene.grid, enabled: !activeScene.grid.enabled });
@@ -288,6 +472,15 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       } else if (key === 'v') {
         e.preventDefault();
         setActiveTool('move');
+      } else if (key === 'b') {
+        e.preventDefault();
+        setActiveTool((t) => (t === 'brush' ? 'move' : 'brush'));
+      } else if (key === 't') {
+        e.preventDefault();
+        setActiveTool((t) => (t === 'text' ? 'move' : 'text'));
+      } else if (key === 'w') {
+        e.preventDefault();
+        setActiveTool((t) => (t === 'wall' ? 'move' : 'wall'));
       } else if (key === 'f') {
         e.preventDefault();
         setDrawerOpen((o) => !o);
@@ -295,13 +488,12 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeScene, liveState]);
+  });
 
   async function handleSelectScene(scene: Scene) {
     if (!campaign) return;
     await activateScene(campaign.id, scene, liveState);
 
-    // Automatically crossfade scene-linked user Music and Ambience tracks
     let audioTriggered = false;
     try {
       if (scene.linkedMusicId) {
@@ -319,7 +511,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         }
       }
     } catch {
-      // Ignore autoplay restriction or missing file silently on scene switch
+      // Ignore autoplay restriction silently
     }
     setAudioIds(audioEngine.getActiveTrackIds());
     notify(
@@ -343,9 +535,17 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
   async function handleFogToggle() {
     if (!campaign || !activeScene) return;
+    recordUndoSnapshot(activeScene);
     const nextEnabled = !activeScene.fogEnabled;
     try {
-      await updateSceneFog(campaign.id, activeScene, nextEnabled, activeScene.fogStrokes, true, liveState);
+      await updateSceneFog(
+        campaign.id,
+        activeScene,
+        nextEnabled,
+        activeScene.fogStrokes,
+        true,
+        liveState
+      );
       if (nextEnabled) {
         setActiveTool('fog_reveal');
         notify('Névoa ativada (100% opaca na Tela dos Jogadores).');
@@ -362,11 +562,19 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
   async function handleFogStrokesChange(strokes: FogStroke[]) {
     if (!campaign || !activeScene) return;
+    recordUndoSnapshot(activeScene);
     setScenes((prev) =>
       prev.map((s) => (s.id === activeScene.id ? { ...s, fogStrokes: strokes } : s))
     );
     try {
-      await updateSceneFog(campaign.id, activeScene, activeScene.fogEnabled, strokes, true, liveState);
+      await updateSceneFog(
+        campaign.id,
+        activeScene,
+        activeScene.fogEnabled,
+        strokes,
+        true,
+        liveState
+      );
     } catch {
       notify('Erro ao sincronizar traços da névoa.');
     }
@@ -374,6 +582,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
   async function handleResetFog(revealAll: boolean) {
     if (!campaign || !activeScene) return;
+    recordUndoSnapshot(activeScene);
     const strokes: FogStroke[] = revealAll
       ? [{ id: `fg_all_${Date.now()}`, mode: 'reveal', shape: 'rect', x: 0, y: 0, w: 1, h: 1 }]
       : [];
@@ -385,10 +594,32 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     }
   }
 
-  async function handleTokensChange(tokens: SceneToken[]) {
+  // Real-time 60fps stream during drag/resize so Shared TV Screen shows movement live while dragging!
+  function handleTokensLiveChange(tokens: SceneToken[]) {
     if (!campaign || !activeScene) return;
     const targetScene = activeScene;
-    // 1. Immediate optimistic UI update so sliders, color pickers, buffs, hit recoil & drag feel 60fps instant
+    if (liveStateRef.current) {
+      broadcastLiveState(campaign.id, {
+        ...liveStateRef.current,
+        activeScene: toLiveSceneSnapshot({ ...targetScene, tokens }),
+      });
+    }
+    const now = Date.now();
+    if (now - lastLiveCloudSyncMsRef.current >= 120) {
+      lastLiveCloudSyncMsRef.current = now;
+      void updateSceneTokens(campaign.id, targetScene, tokens, true, liveStateRef.current).catch(
+        () => {}
+      );
+    }
+  }
+
+  async function handleTokensChange(tokens: SceneToken[], skipUndo = false) {
+    if (!campaign || !activeScene) return;
+    const targetScene = activeScene;
+    if (!skipUndo) {
+      recordUndoSnapshot(targetScene);
+    }
+    // 1. Immediate optimistic UI update
     setScenes((prev) =>
       prev.map((s) => (s.id === targetScene.id ? { ...s, tokens } : s))
     );
@@ -399,7 +630,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         activeScene: toLiveSceneSnapshot({ ...targetScene, tokens }),
       });
     }
-    // 3. Debounced Firestore persistence (180ms) so continuous slider/color dragging never floods writes
+    // 3. Debounced Firestore persistence (140ms)
     pendingTokensRef.current = { scene: targetScene, tokens };
     if (tokenSaveTimerRef.current) {
       window.clearTimeout(tokenSaveTimerRef.current);
@@ -410,16 +641,21 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       const latest = pendingTokensRef.current;
       pendingTokensRef.current = null;
       if (!latest) return;
-      void updateSceneTokens(campId, latest.scene, latest.tokens, true, liveStateRef.current).catch(
-        () => {
-          notify('Erro ao salvar alterações do token na nuvem.');
-        }
-      );
-    }, 180);
+      void updateSceneTokens(
+        campId,
+        latest.scene,
+        latest.tokens,
+        true,
+        liveStateRef.current
+      ).catch(() => {
+        notify('Erro ao salvar alterações da camada na nuvem.');
+      });
+    }, 140);
   }
 
   async function handleWallsChange(walls: SceneWall[]) {
     if (!campaign || !activeScene) return;
+    recordUndoSnapshot(activeScene);
     const autoVision = walls.length > 0 ? true : Boolean(activeScene.dynamicVision);
     setScenes((prev) =>
       prev.map((s) =>
@@ -435,6 +671,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
   async function handleToggleDynamicVision() {
     if (!campaign || !activeScene) return;
+    recordUndoSnapshot(activeScene);
     const next = !activeScene.dynamicVision;
     try {
       await updateSceneWalls(
@@ -494,7 +731,6 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
     const rollerDisplay = params.rollerName || `${user.displayName || 'Mestre'} (Mestre)`;
 
-    // Trigger dynamic tumbling dice animation immediately on click
     if (evalResult.outcome !== 'chat') {
       setActiveRollAnim({
         id: `anim_${Date.now()}`,
@@ -531,14 +767,11 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   function handleThemeChange(theme: CampaignTheme) {
     if (!campaign) return;
     const clean = sanitizeTheme(theme);
-    // 1. Apply at 0ms latency locally (UI, CSS vars, fonts, and live FX overlays)
     setLocalTheme(clean);
     applyCampaignTheme(clean);
-    // 2. Instant zero-latency sync with Second Screen TV tab on same machine
     if (liveStateRef.current) {
       broadcastLiveState(campaign.id, { ...liveStateRef.current, theme: clean });
     }
-    // 3. Debounced Firestore persistence (220ms) so dragging color/FX sliders never snaps back
     pendingThemeRef.current = clean;
     if (themeSaveTimerRef.current) {
       window.clearTimeout(themeSaveTimerRef.current);
@@ -566,7 +799,6 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   async function handleShakePulse() {
     if (!campaign) return;
     const now = Date.now();
-    // Trigger immediately on the GM canvas at 0ms latency
     setLocalShakePulseMs(now);
     try {
       await triggerShakePulse(campaign.id, liveStateRef.current);
@@ -587,7 +819,11 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     return (
       <div className="h-screen vtt-canvas flex flex-col items-center justify-center gap-4 p-6 text-center">
         <p className="text-lg font-bold font-typewriter">Campanha não encontrada</p>
-        <button type="button" onClick={onExit} className="px-4 py-2 text-xs font-semibold vtt-accent-btn">
+        <button
+          type="button"
+          onClick={onExit}
+          className="px-4 py-2 text-xs font-semibold vtt-accent-btn"
+        >
           Voltar às campanhas
         </button>
       </div>
@@ -610,9 +846,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   return (
     <div className="h-screen w-screen overflow-hidden flex flex-col vtt-canvas">
       {/* Clean 3-Zone Top Bar */}
-      <header className="h-14 px-4 border-b vtt-border vtt-surface flex items-center justify-between gap-4 shrink-0 z-30">
-        {/* Zone 1: Back + Campaign Title */}
-        <div className="flex items-center gap-3 min-w-0">
+      <header className="h-14 px-4 border-b vtt-border vtt-surface flex items-center justify-between gap-3 shrink-0 z-30">
+        {/* Zone 1: Back + Campaign Title + Undo/Redo */}
+        <div className="flex items-center gap-2 min-w-0">
           <button
             type="button"
             onClick={onExit}
@@ -622,20 +858,44 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
-          <span className="text-base font-bold font-typewriter truncate">
+          <span className="text-sm sm:text-base font-bold font-typewriter truncate max-w-[160px] sm:max-w-[220px]">
             {campaign.title}
           </span>
+          <div className="flex items-center gap-0.5 ml-1">
+            <button
+              type="button"
+              onClick={handleUndo}
+              disabled={undoStack.length === 0}
+              className="p-1.5 border vtt-border vtt-canvas hover:vtt-subtle disabled:opacity-35"
+              title="Desfazer (Ctrl+Z)"
+              aria-label="Desfazer"
+            >
+              <Undo2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={handleRedo}
+              disabled={redoStack.length === 0}
+              className="p-1.5 border vtt-border vtt-canvas hover:vtt-subtle disabled:opacity-35"
+              title="Refazer (Ctrl+Y)"
+              aria-label="Refazer"
+            >
+              <Redo2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
-        {/* Zone 2: Direct Tabletop Tool Controls */}
-        <div className="hidden md:flex items-center gap-1.5">
+        {/* Zone 2: Photoshop-Inspired Tabletop Tool Controls */}
+        <div className="hidden lg:flex items-center gap-1">
           <button
             type="button"
             onClick={() => setActiveTool('move')}
-            className={`px-3 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTool === 'move' ? 'vtt-accent-btn border-transparent font-semibold' : 'vtt-canvas vtt-border'
+            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              activeTool === 'move'
+                ? 'vtt-accent-btn border-transparent font-semibold'
+                : 'vtt-canvas vtt-border'
             }`}
-            title="Mover tokens (V)"
+            title="Mover e redimensionar camadas/tokens (V)"
           >
             <Hand className="w-3.5 h-3.5" />
             Mover
@@ -643,26 +903,30 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
           <button
             type="button"
-            onClick={() => setActiveTool((t) => (t === 'ruler' ? 'move' : 'ruler'))}
-            className={`px-3 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeTool === 'ruler' ? 'vtt-accent-btn border-transparent font-semibold' : 'vtt-canvas vtt-border'
+            onClick={() => setActiveTool((t) => (t === 'brush' ? 'move' : 'brush'))}
+            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              activeTool === 'brush'
+                ? 'vtt-accent-btn border-transparent font-semibold'
+                : 'vtt-canvas vtt-border'
             }`}
-            title="Régua rápida (R) — some ao soltar o clique"
+            title="Desenhar com pincel no cenário (B)"
           >
-            <Ruler className="w-3.5 h-3.5" />
-            Régua
+            <Brush className="w-3.5 h-3.5" />
+            Pincel
           </button>
 
           <button
             type="button"
-            onClick={() => void handleFogToggle()}
-            className={`px-3 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-              activeScene?.fogEnabled ? 'vtt-accent-btn border-transparent font-semibold' : 'vtt-canvas vtt-border'
+            onClick={() => setActiveTool((t) => (t === 'text' ? 'move' : 'text'))}
+            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              activeTool === 'text'
+                ? 'vtt-accent-btn border-transparent font-semibold'
+                : 'vtt-canvas vtt-border'
             }`}
-            title="Ligar/desligar Névoa de Guerra"
+            title="Colocar texto no cenário (T)"
           >
-            <CloudFog className="w-3.5 h-3.5" />
-            {activeScene?.fogEnabled ? 'Névoa ativa' : 'Névoa'}
+            <Type className="w-3.5 h-3.5" />
+            Texto
           </button>
 
           <button
@@ -672,15 +936,43 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 t === 'wall' || t === 'door' || t === 'wall_erase' ? 'move' : 'wall'
               )
             }
-            className={`px-3 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTool === 'wall' || activeTool === 'door' || activeTool === 'wall_erase'
                 ? 'vtt-accent-btn border-transparent font-semibold'
                 : 'vtt-canvas vtt-border'
             }`}
-            title="Desenhar muros e portas que bloqueiam visão dos jogadores"
+            title="Desenhar muros e portas alinhados ao mapa (W)"
           >
             <BrickWall className="w-3.5 h-3.5" />
             Muros
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleFogToggle()}
+            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              activeScene?.fogEnabled
+                ? 'vtt-accent-btn border-transparent font-semibold'
+                : 'vtt-canvas vtt-border'
+            }`}
+            title="Ligar/desligar Névoa de Guerra"
+          >
+            <CloudFog className="w-3.5 h-3.5" />
+            {activeScene?.fogEnabled ? 'Névoa ON' : 'Névoa'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTool((t) => (t === 'ruler' ? 'move' : 'ruler'))}
+            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              activeTool === 'ruler'
+                ? 'vtt-accent-btn border-transparent font-semibold'
+                : 'vtt-canvas vtt-border'
+            }`}
+            title="Régua rápida (R)"
+          >
+            <Ruler className="w-3.5 h-3.5" />
+            Régua
           </button>
 
           {activeScene && (
@@ -688,12 +980,17 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
               <button
                 type="button"
                 onClick={() =>
-                  void handleGridUpdate({ ...activeScene.grid, enabled: !activeScene.grid.enabled })
+                  void handleGridUpdate({
+                    ...activeScene.grid,
+                    enabled: !activeScene.grid.enabled,
+                  })
                 }
-                className={`px-3 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                  activeScene.grid.enabled ? 'vtt-accent-btn border-transparent font-semibold' : 'vtt-canvas vtt-border'
+                className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                  activeScene.grid.enabled
+                    ? 'vtt-accent-btn border-transparent font-semibold'
+                    : 'vtt-canvas vtt-border'
                 }`}
-                title="Ligar/desligar Grid instantaneamente (G)"
+                title="Ligar/desligar Grid (G)"
               >
                 <Grid className="w-3.5 h-3.5" />
                 Grid
@@ -701,14 +998,13 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
               <button
                 type="button"
                 onClick={() => setShowGridPopover((v) => !v)}
-                className="px-2 py-1.5 text-xs border border-l-0 vtt-border vtt-canvas hover:opacity-80"
-                title="Calibrar escala do grid para miniaturas físicas"
+                className="px-1.5 py-1.5 text-xs border border-l-0 vtt-border vtt-canvas hover:opacity-80"
+                title="Calibrar escala do grid"
                 aria-label="Calibrar grid"
               >
                 <SlidersHorizontal className="w-3.5 h-3.5" />
               </button>
 
-              {/* Grid Physical Scale Calibration Popover */}
               {showGridPopover && (
                 <div className="absolute top-11 left-0 w-72 vtt-surface border p-4 shadow-xl space-y-3 z-40">
                   <div className="flex items-center justify-between">
@@ -720,27 +1016,6 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                     >
                       Fechar
                     </button>
-                  </div>
-
-                  <div className="p-2.5 vtt-subtle border vtt-border space-y-1.5">
-                    <p className="text-[11px] vtt-muted">
-                      Apoie uma miniatura física (25 mm) neste quadrado para calibrar a TV:
-                    </p>
-                    <div className="flex items-center gap-3">
-                      <div
-                        className="border-2 border-dashed flex items-center justify-center text-[10px] tabular-nums shrink-0"
-                        style={{
-                          width: `${Math.min(110, activeScene.grid.cellSizePx)}px`,
-                          height: `${Math.min(110, activeScene.grid.cellSizePx)}px`,
-                          borderColor: 'var(--accent-primary)',
-                        }}
-                      >
-                        {activeScene.grid.cellSizePx}px
-                      </div>
-                      <span className="text-[11px] vtt-muted tabular-nums">
-                        1 quadrado = {activeScene.grid.unitValue} {activeScene.grid.unitLabel}
-                      </span>
-                    </div>
                   </div>
 
                   <label className="block space-y-1 text-xs">
@@ -767,7 +1042,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                   <label className="block space-y-1 text-xs">
                     <div className="flex justify-between">
                       <span>Opacidade das linhas</span>
-                      <span className="tabular-nums">{Math.round(activeScene.grid.opacity * 100)}%</span>
+                      <span className="tabular-nums">
+                        {Math.round(activeScene.grid.opacity * 100)}%
+                      </span>
                     </div>
                     <input
                       type="range"
@@ -776,7 +1053,10 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                       step={0.05}
                       value={activeScene.grid.opacity}
                       onChange={(e) =>
-                        void handleGridUpdate({ ...activeScene.grid, opacity: Number(e.target.value) })
+                        void handleGridUpdate({
+                          ...activeScene.grid,
+                          opacity: Number(e.target.value),
+                        })
                       }
                       className="w-full"
                     />
@@ -820,7 +1100,6 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
             </div>
           )}
 
-          {/* Quick 1-click Impact Shake Button */}
           <button
             type="button"
             onClick={() => void handleShakePulse()}
@@ -861,7 +1140,111 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Left/Center Stage Area */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
-          {/* Active Fog Sub-toolbar (only visible when Fog is enabled on active scene) */}
+          {/* Contextual Brush & Text Sub-toolbar */}
+          {(activeTool === 'brush' || activeTool === 'text') && (
+            <div className="px-4 py-2 border-b vtt-border vtt-subtle flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-semibold">
+                  {activeTool === 'text' ? 'Texto no Mapa:' : 'Pincel:'}
+                </span>
+
+                {activeTool === 'brush' &&
+                  (
+                    [
+                      ['pen', 'Caneta'],
+                      ['marker', 'Marcador'],
+                      ['chalk', 'Giz'],
+                      ['glow', 'Neon'],
+                      ['arrow', 'Seta'],
+                    ] as Array<[BrushStyleId, string]>
+                  ).map(([id, label]) => (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setBrushStyle(id)}
+                      className={`px-2.5 py-1 border whitespace-nowrap ${
+                        brushStyle === id
+                          ? 'vtt-accent-btn border-transparent font-semibold'
+                          : 'vtt-surface vtt-border'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+
+                {activeTool === 'text' && (
+                  <span className="vtt-muted">
+                    Clique em qualquer ponto do mapa para inserir um texto editável e redimensionável.
+                  </span>
+                )}
+
+                <div className="flex items-center gap-1 pl-2">
+                  {BRUSH_SWATCHES.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => setBrushColor(c)}
+                      className={`w-5 h-5 rounded-full border ${
+                        brushColor === c ? 'ring-2 ring-current scale-110' : 'border-black/30'
+                      }`}
+                      style={{ backgroundColor: c }}
+                      aria-label={`Cor ${c}`}
+                    />
+                  ))}
+                  <input
+                    type="color"
+                    value={brushColor}
+                    onChange={(e) => setBrushColor(e.target.value)}
+                    className="w-6 h-5 border vtt-border bg-transparent cursor-pointer"
+                    title="Cor personalizada"
+                  />
+                </div>
+
+                {activeTool === 'brush' && (
+                  <label className="flex items-center gap-1.5 pl-2">
+                    <span className="vtt-muted">Espessura</span>
+                    <input
+                      type="range"
+                      min={2}
+                      max={24}
+                      step={1}
+                      value={brushSize}
+                      onChange={(e) => setBrushSize(Number(e.target.value))}
+                      className="w-20"
+                    />
+                  </label>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                {activeScene?.tokens.some((t) => t.layerKind === 'brush') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!activeScene) return;
+                      void handleTokensChange(
+                        activeScene.tokens.filter((t) => t.layerKind !== 'brush')
+                      );
+                      notify('Desenhos do cenário removidos.');
+                    }}
+                    className="px-2.5 py-1 border vtt-border vtt-surface hover:opacity-80 flex items-center gap-1 whitespace-nowrap"
+                  >
+                    <Eraser className="w-3 h-3" />
+                    Limpar desenhos
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setActiveTool('move')}
+                  className="px-2.5 py-1 border vtt-border vtt-surface hover:opacity-80 whitespace-nowrap"
+                >
+                  Concluir
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Active Fog Sub-toolbar */}
           {activeScene?.fogEnabled && (
             <div className="px-4 py-2 border-b vtt-border vtt-subtle flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
               <div className="flex items-center gap-1.5">
@@ -870,7 +1253,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                   type="button"
                   onClick={() => setActiveTool('fog_reveal')}
                   className={`px-2.5 py-1 border flex items-center gap-1 whitespace-nowrap ${
-                    activeTool === 'fog_reveal' ? 'vtt-accent-btn border-transparent font-semibold' : 'vtt-surface vtt-border'
+                    activeTool === 'fog_reveal'
+                      ? 'vtt-accent-btn border-transparent font-semibold'
+                      : 'vtt-surface vtt-border'
                   }`}
                 >
                   <Eye className="w-3.5 h-3.5" />
@@ -880,7 +1265,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                   type="button"
                   onClick={() => setActiveTool('fog_hide')}
                   className={`px-2.5 py-1 border flex items-center gap-1 whitespace-nowrap ${
-                    activeTool === 'fog_hide' ? 'vtt-accent-btn border-transparent font-semibold' : 'vtt-surface vtt-border'
+                    activeTool === 'fog_hide'
+                      ? 'vtt-accent-btn border-transparent font-semibold'
+                      : 'vtt-surface vtt-border'
                   }`}
                 >
                   <EyeOff className="w-3.5 h-3.5" />
@@ -919,7 +1306,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
             </div>
           )}
 
-          {/* Contextual Walls & Doors Sub-toolbar (only visible when editing walls — keeps UI calm) */}
+          {/* Contextual Walls & Doors Sub-toolbar */}
           {activeScene &&
             (activeTool === 'wall' || activeTool === 'door' || activeTool === 'wall_erase') && (
               <div className="px-4 py-2 border-b vtt-border vtt-subtle flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
@@ -929,7 +1316,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                     type="button"
                     onClick={() => setActiveTool('wall')}
                     className={`px-2.5 py-1 border flex items-center gap-1 whitespace-nowrap ${
-                      activeTool === 'wall' ? 'vtt-accent-btn border-transparent font-semibold' : 'vtt-surface vtt-border'
+                      activeTool === 'wall'
+                        ? 'vtt-accent-btn border-transparent font-semibold'
+                        : 'vtt-surface vtt-border'
                     }`}
                   >
                     <BrickWall className="w-3.5 h-3.5" />
@@ -939,7 +1328,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                     type="button"
                     onClick={() => setActiveTool('door')}
                     className={`px-2.5 py-1 border flex items-center gap-1 whitespace-nowrap ${
-                      activeTool === 'door' ? 'vtt-accent-btn border-transparent font-semibold' : 'vtt-surface vtt-border'
+                      activeTool === 'door'
+                        ? 'vtt-accent-btn border-transparent font-semibold'
+                        : 'vtt-surface vtt-border'
                     }`}
                   >
                     <DoorClosed className="w-3.5 h-3.5" />
@@ -949,7 +1340,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                     type="button"
                     onClick={() => setActiveTool('wall_erase')}
                     className={`px-2.5 py-1 border flex items-center gap-1 whitespace-nowrap ${
-                      activeTool === 'wall_erase' ? 'vtt-accent-btn border-transparent font-semibold' : 'vtt-surface vtt-border'
+                      activeTool === 'wall_erase'
+                        ? 'vtt-accent-btn border-transparent font-semibold'
+                        : 'vtt-surface vtt-border'
                     }`}
                   >
                     <Eraser className="w-3.5 h-3.5" />
@@ -1031,10 +1424,16 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 mode="gm"
                 activeTool={activeTool}
                 fogBrushRadius={fogBrushRadius}
+                brushStyle={brushStyle}
+                brushColor={brushColor}
+                brushSize={brushSize}
                 onTokensChange={(t) => void handleTokensChange(t)}
+                onTokensLiveChange={handleTokensLiveChange}
                 onFogStrokesChange={(s) => void handleFogStrokesChange(s)}
                 onWallsChange={(w) => void handleWallsChange(w)}
                 onShowTokenPopup={(h) => void handleProjectHandout(h)}
+                onSaveToVault={handleSaveTokenToVault}
+                onToolChange={setActiveTool}
                 onNotify={notify}
               />
             </SceneEffectsStage>
@@ -1047,7 +1446,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
             )}
           </div>
 
-          {/* Quick-Switch Scene Dock (Preloaded thumbnails for zero-lag switching) */}
+          {/* Quick-Switch Scene Dock */}
           <div className="h-24 border-t vtt-border vtt-surface px-3 py-2 flex items-center gap-2.5 overflow-x-auto shrink-0">
             {scenes.map((scene) => {
               const isActive = activeScene?.id === scene.id;
@@ -1062,7 +1461,10 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                   }`}
                   style={
                     isActive
-                      ? { borderColor: 'var(--accent-primary)', boxShadow: '0 0 0 1px var(--accent-primary)' }
+                      ? {
+                          borderColor: 'var(--accent-primary)',
+                          boxShadow: '0 0 0 1px var(--accent-primary)',
+                        }
                       : undefined
                   }
                 >
@@ -1110,7 +1512,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           </div>
         </div>
 
-        {/* Ergonomic Single Active Right Drawer (ADHD-friendly: 1 focused tool at a time) */}
+        {/* Ergonomic Single Active Right Drawer */}
         {drawerOpen && (
           <aside className="w-80 sm:w-96 border-l vtt-border vtt-surface flex flex-col shrink-0 min-h-0">
             {activeDrawer === 'scenes' && (
@@ -1123,6 +1525,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 audioTracks={audioTracks}
                 members={members}
                 sheets={sheets}
+                vaultAssets={vaultAssets}
                 onSelectScene={(s) => void handleSelectScene(s)}
                 onCreateScene={async (data) => {
                   const id = await createScene({
@@ -1182,6 +1585,14 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 }}
                 onUpdateSceneTokens={async (tokens) => {
                   await handleTokensChange(tokens);
+                }}
+                onSaveTokenToVault={(tok) => {
+                  handleSaveTokenToVault(tok);
+                  notify(`"${tok.name}" salvo no Acervo.`);
+                }}
+                onRemoveVaultAsset={(id) => {
+                  handleRemoveVaultAsset(id);
+                  notify('Item removido do Acervo.');
                 }}
                 onCreateHandout={async (data) => {
                   await createHandout({

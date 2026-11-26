@@ -67,7 +67,7 @@ export type SceneMediaKind = 'image' | 'video' | 'gif';
 
 export interface SceneWall {
   id: string;
-  x1: number; // normalized 0..1
+  x1: number; // normalized 0..1 inside the map image coordinate box
   y1: number;
   x2: number;
   y2: number;
@@ -80,6 +80,9 @@ export type TokenTexture = 'none' | 'grain' | 'holo' | 'metallic' | 'aged';
 export type TokenShadow = 'none' | 'soft' | 'dramatic' | 'colored';
 export type TokenBehavior = 'none' | 'float' | 'pulse' | 'spin_ring' | 'tremble';
 
+export type CanvasLayerKind = 'token' | 'image' | 'text' | 'brush';
+export type BrushStyleId = 'pen' | 'marker' | 'chalk' | 'glow' | 'spray' | 'arrow';
+
 export interface TokenStatusEffect {
   id: string;
   label: string;
@@ -87,12 +90,23 @@ export interface TokenStatusEffect {
   color: string;
 }
 
+export interface BrushPoint {
+  x: number; // normalized 0..1 inside map coordinate box
+  y: number;
+}
+
 export interface SceneToken {
   id: string;
   name: string;
-  x: number;
-  y: number;
-  sizePx: number;
+  x: number; // normalized 0..1 inside map coordinate box
+  y: number; // normalized 0..1 inside map coordinate box
+  sizePx: number; // base size in 1200px reference canvas units
+  widthPx?: number; // freeform width in 1200px reference canvas units
+  heightPx?: number; // freeform height in 1200px reference canvas units
+  layerKind?: CanvasLayerKind; // 'token' (default) | 'image' | 'text' | 'brush'
+  shape?: 'circle' | 'rect';
+  locked?: boolean;
+  opacity?: number; // 0.1 .. 1
   color: string;
   imageUrl?: string;
   mediaId?: string;
@@ -108,6 +122,14 @@ export interface SceneToken {
   statuses?: TokenStatusEffect[];
   visionEnabled?: boolean;
   visionRadius?: number; // normalized 0.10 .. 0.85
+  // Text layer fields
+  text?: string;
+  fontSize?: number; // in 1200px reference units
+  textBg?: boolean;
+  // Brush stroke layer fields
+  brushStyle?: BrushStyleId;
+  brushSize?: number;
+  points?: BrushPoint[];
 }
 
 export type SceneCategory = 'tactical' | 'landscape' | 'location';
@@ -159,7 +181,7 @@ export interface ActiveHandoutProjection {
   body: string;
 }
 
-export type SheetBlockType = 'bar' | 'attribute' | 'counter' | 'text';
+export type SheetBlockType = 'bar' | 'attribute' | 'item' | 'counter' | 'text';
 
 export interface SheetBlock {
   id: string;
@@ -174,6 +196,13 @@ export interface SheetBlock {
   count?: number;
   maxCount?: number;
   text?: string;
+  // Universal Custom Item / Action fields
+  linkedAttribute?: string; // Name of attribute to pull automatically
+  secondaryAttribute?: string; // Optional second attribute to sum/combine
+  diceType?: string; // e.g. '1d20', '2d6', '1d100', 'pool_d20', 'pool_d10', 'pool_d6', '1d12', '1d10', '1d8', '1d6', '1d4'
+  bonus?: number; // Numeric flat bonus
+  damageFormula?: string; // Optional secondary roll (e.g. '1d8 + {Força}')
+  damageLabel?: string; // e.g. 'Dano' or 'Efeito'
 }
 
 export interface CharacterSheet {
@@ -184,7 +213,7 @@ export interface CharacterSheet {
   ownerName: string;
   name: string;
   subtitle: string;
-  templateId: string; // Stores the custom RPG system name (e.g. 'Sistema Livre' or detected from PDF)
+  templateId: string; // Stores the custom RPG system name
   mode: 'modular' | 'pdf';
   avatarUrl?: string;
   avatarMediaId?: string;

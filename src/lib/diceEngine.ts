@@ -19,13 +19,56 @@ function normalizeKey(str: string): string {
     .toLowerCase();
 }
 
+export function buildAutoItemFormula(params: {
+  diceType?: string;
+  linkedAttribute?: string;
+  secondaryAttribute?: string;
+  bonus?: number;
+}): string {
+  const dice = (params.diceType || '1d20').trim();
+  const attr1 = (params.linkedAttribute || '').trim();
+  const attr2 = (params.secondaryAttribute || '').trim();
+  const bonus = Number(params.bonus || 0);
+  const bonusPart =
+    bonus > 0 ? ` + ${bonus}` : bonus < 0 ? ` - ${Math.abs(bonus)}` : '';
+
+  if (dice === 'pool_d20') {
+    const countPart = attr1 ? `{${attr1}}` : '1';
+    const secPart = attr2 ? ` + {${attr2}}` : '';
+    return `${countPart}d20kh1${secPart}${bonusPart}`;
+  }
+
+  if (dice === 'pool_d10') {
+    const countPart = attr1 ? `{${attr1}}` : '4';
+    return `${countPart}d10>=6`;
+  }
+
+  if (dice === 'pool_d6') {
+    const countPart = attr1 ? `{${attr1}}` : '2';
+    const secPart = attr2 ? ` + {${attr2}}` : '';
+    return `${countPart}d6${secPart}${bonusPart}`;
+  }
+
+  if (dice === '1d100') {
+    if (attr1) {
+      return `1d100<={${attr1}}`;
+    }
+    return `1d100<=${bonus > 0 ? bonus : 50}`;
+  }
+
+  // Standard additive dice (1d20, 2d6, 1d12, 1d10, 1d8, 1d6, 1d4, etc.)
+  const attr1Part = attr1 ? ` + {${attr1}}` : '';
+  const attr2Part = attr2 ? ` + {${attr2}}` : '';
+  return `${dice}${attr1Part}${attr2Part}${bonusPart}`;
+}
+
 export function resolveSheetFormula(formula: string, blocks: SheetBlock[] = []): string {
   if (!formula.includes('{')) return formula.trim();
 
   const lookup = new Map<string, number>();
   for (const b of blocks) {
     const key = normalizeKey(b.label);
-    if (b.type === 'attribute' && typeof b.value === 'number') {
+    if ((b.type === 'attribute' || b.type === 'item') && typeof b.value === 'number') {
       lookup.set(key, b.value);
     } else if (b.type === 'bar' && typeof b.current === 'number') {
       lookup.set(key, b.current);
@@ -85,6 +128,7 @@ function rollDiceGroup(
 export function isDiceFormula(input: string): boolean {
   const clean = input.trim().toLowerCase();
   if (clean.startsWith('/r ') || clean.startsWith('/roll ')) return true;
+  if (clean.includes('{') && clean.includes('d')) return true;
   return /^-?\d*d\d+/i.test(clean);
 }
 
@@ -101,9 +145,9 @@ export function evaluateDiceFormula(
   const compact = resolved.replace(/\s+/g, '');
 
   // 1. Target d100 comparison: e.g. 1d100<=65 or d100<=40
-  const d100Match = compact.match(/^(\d*)d100(<=|<)(\d+)$/i);
+  const d100Match = compact.match(/^(\d*)d100(<=|<)(-?\d+)$/i);
   if (d100Match) {
-    const target = Number(d100Match[3]);
+    const target = Math.max(1, Number(d100Match[3]));
     const strictLess = d100Match[2] === '<';
     let roll = rollDie(100);
     let modeNote = '';
@@ -182,8 +226,8 @@ export function evaluateDiceFormula(
   }
 
   // 3. Standard additive/subtractive dice expression (with !, khN, klN, advantage/disadvantage)
-  // Handle 0d20kh1 (e.g. Ordem Paranormal attribute 0 -> roll 2d20kl1)
-  let expr = compact.replace(/^0d20kh1/i, '2d20kl1');
+  // Handle <=0 dice in pool_d20 (e.g. 0d20kh1 or -1d20kh1 -> roll 2d20kl1)
+  let expr = compact.replace(/^(0|-\d+)d20kh1/i, '2d20kl1');
   if (
     (options.mode === 'advantage' || options.mode === 'disadvantage') &&
     /^1?d20(?![a-z])/i.test(expr)
