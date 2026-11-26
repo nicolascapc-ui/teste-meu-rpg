@@ -1,10 +1,13 @@
 import { buildAutoItemFormula } from './diceEngine';
+import { resolveMediaUrl } from './mediaStore';
 import type {
   CharacterSheet,
   CustomDuelArenaPreset,
   DuelActionItem,
   DuelArenaPresetId,
+  DuelAttackSfxMap,
   DuelCombatantState,
+  DuelCustomSfxEntry,
   DuelParticleKind,
   Scene,
   SceneDuelConfig,
@@ -225,6 +228,78 @@ export function getDuelArenaPreset(
 }
 
 const DUEL_CFG_STORAGE_PREFIX = 'folio_scene_duel_cfg_v1';
+const CAMPAIGN_ATTACK_SFX_PREFIX = 'folio_duel_attack_sfx_v1';
+const CAMPAIGN_ACTION_SFX_PREFIX = 'folio_duel_action_sfx_v1';
+
+export function loadCampaignAttackSfx(campaignId: string): DuelAttackSfxMap {
+  if (!campaignId || typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(`${CAMPAIGN_ATTACK_SFX_PREFIX}_${campaignId}`);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as DuelAttackSfxMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveCampaignAttackSfx(
+  campaignId: string,
+  map: DuelAttackSfxMap
+): DuelAttackSfxMap {
+  if (campaignId && typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(
+        `${CAMPAIGN_ATTACK_SFX_PREFIX}_${campaignId}`,
+        JSON.stringify(map)
+      );
+    } catch {
+      // ignore quota
+    }
+  }
+  return map;
+}
+
+export function loadActionCustomSfxMap(
+  campaignId?: string
+): Record<string, DuelCustomSfxEntry> {
+  if (!campaignId || typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(`${CAMPAIGN_ACTION_SFX_PREFIX}_${campaignId}`);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object'
+      ? (parsed as Record<string, DuelCustomSfxEntry>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveActionCustomSfx(
+  campaignId: string,
+  actionKey: string,
+  entry: DuelCustomSfxEntry | null
+): Record<string, DuelCustomSfxEntry> {
+  const current = loadActionCustomSfxMap(campaignId);
+  const next = { ...current };
+  if (!entry || (!entry.url && !entry.mediaId)) {
+    delete next[actionKey];
+  } else {
+    next[actionKey] = entry;
+  }
+  if (campaignId && typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(
+        `${CAMPAIGN_ACTION_SFX_PREFIX}_${campaignId}`,
+        JSON.stringify(next)
+      );
+    } catch {
+      // ignore quota
+    }
+  }
+  return next;
+}
 
 export function loadSceneDuelConfig(campaignId: string, scene: Scene | null): SceneDuelConfig {
   const fallback: SceneDuelConfig = {
@@ -234,6 +309,7 @@ export function loadSceneDuelConfig(campaignId: string, scene: Scene | null): Sc
     arenaPreset: 'expedition_ruins',
     customArenaStyle: null,
     musicTrackId: scene?.linkedMusicId || '',
+    attackSfxMap: loadCampaignAttackSfx(campaignId),
   };
   if (!scene || typeof window === 'undefined') return fallback;
   try {
@@ -248,6 +324,7 @@ export function loadSceneDuelConfig(campaignId: string, scene: Scene | null): Sc
       customArenaStyle: parsed.customArenaStyle || null,
       musicTrackId:
         typeof parsed.musicTrackId === 'string' ? parsed.musicTrackId : fallback.musicTrackId,
+      attackSfxMap: parsed.attackSfxMap || fallback.attackSfxMap,
     };
   } catch {
     return fallback;
@@ -268,6 +345,9 @@ export function saveSceneDuelConfig(
     } catch {
       // ignore storage quota errors
     }
+  }
+  if (config.attackSfxMap) {
+    saveCampaignAttackSfx(campaignId, config.attackSfxMap);
   }
   return config;
 }
@@ -317,12 +397,23 @@ export function extractActionsFromSheetAndToken(
 ): DuelActionItem[] {
   const actions: DuelActionItem[] = [];
   const seenLabels = new Set<string>();
+  const savedActionSfx = loadActionCustomSfxMap(sheet?.campaignId);
 
   const pushUnique = (item: DuelActionItem) => {
     const key = normalizeMatch(item.label);
     if (!key || seenLabels.has(key)) return;
     seenLabels.add(key);
-    actions.push(item);
+    const savedSfx = savedActionSfx[`${token.id}_${key}`] || savedActionSfx[key];
+    actions.push(
+      savedSfx
+        ? {
+            ...item,
+            sfxUrl: savedSfx.url,
+            sfxMediaId: savedSfx.mediaId,
+            sfxFileName: savedSfx.fileName,
+          }
+        : item
+    );
   };
 
   const blocks: SheetBlock[] = sheet?.blocks || [];
@@ -549,6 +640,34 @@ function getSfxContext(): AudioContext | null {
 }
 
 export function playCombatCursorSfx(
+  kind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield',
+  customSfx?: { url?: string; mediaId?: string; campaignId?: string }
+) {
+  if (customSfx && (customSfx.url || customSfx.mediaId)) {
+    void resolveMediaUrl(customSfx.mediaId, customSfx.url || '', customSfx.campaignId)
+      .then((resolved) => {
+        if (!resolved) {
+          playProceduralCombatSfx(kind);
+          return;
+        }
+        const audio = new Audio();
+        audio.crossOrigin = 'anonymous';
+        audio.src = resolved;
+        audio.volume = 0.85;
+        void audio.play().catch(() => {
+          playProceduralCombatSfx(kind);
+        });
+      })
+      .catch(() => {
+        playProceduralCombatSfx(kind);
+      });
+    return;
+  }
+
+  playProceduralCombatSfx(kind);
+}
+
+function playProceduralCombatSfx(
   kind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield'
 ) {
   const ctx = getSfxContext();

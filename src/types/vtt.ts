@@ -369,6 +369,16 @@ export type DuelCameraAngle =
 
 export type DuelCursorAttackMode = 'none' | 'blade' | 'blunt' | 'shot' | 'arcane';
 
+export interface DuelCustomSfxEntry {
+  url: string;
+  mediaId?: string;
+  fileName?: string;
+}
+
+export type DuelAttackSfxMap = Partial<
+  Record<'blade' | 'blunt' | 'shot' | 'arcane', DuelCustomSfxEntry>
+>;
+
 export interface DuelActionItem {
   id: string;
   label: string;
@@ -378,6 +388,9 @@ export interface DuelActionItem {
   damageLabel?: string;
   description?: string;
   sourceLabel?: string;
+  sfxUrl?: string;
+  sfxMediaId?: string;
+  sfxFileName?: string;
 }
 
 export interface DuelCombatantState {
@@ -409,6 +422,8 @@ export interface DuelLiveEffect {
   label?: string;
   isCrit?: boolean;
   slashPoints?: Array<{ x: number; y: number }>;
+  sfxUrl?: string;
+  sfxMediaId?: string;
 }
 
 export interface ActiveDuelState {
@@ -424,6 +439,8 @@ export interface ActiveDuelState {
   bgMediaKind?: SceneMediaKind;
   musicTrackId?: string;
   hidePlayerActionsOnScreen: boolean;
+  showCombatantNamesOnScreen?: boolean;
+  attackSfxMap?: DuelAttackSfxMap;
   player: DuelCombatantState;
   npc: DuelCombatantState;
   lastActionSummary?: string;
@@ -438,6 +455,7 @@ export interface SceneDuelConfig {
   arenaPreset: DuelArenaPresetId;
   customArenaStyle?: CustomDuelArenaPreset | null;
   musicTrackId: string;
+  attackSfxMap?: DuelAttackSfxMap;
 }
 
 export interface LiveSceneSnapshot {
