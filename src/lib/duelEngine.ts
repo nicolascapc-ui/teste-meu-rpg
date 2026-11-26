@@ -1,9 +1,11 @@
 import { buildAutoItemFormula } from './diceEngine';
 import type {
   CharacterSheet,
+  CustomDuelArenaPreset,
   DuelActionItem,
   DuelArenaPresetId,
   DuelCombatantState,
+  DuelParticleKind,
   Scene,
   SceneDuelConfig,
   SceneToken,
@@ -14,65 +16,134 @@ export interface DuelArenaPresetMeta {
   id: DuelArenaPresetId;
   name: string;
   subtitle: string;
+  bgColor: string;
+  floorColor: string;
   skyGradient: string;
   floorGradient: string;
   floorGridColor: string;
   accentColor: string;
   ambientGlow: string;
-  particleKind: 'embers' | 'slashes' | 'sparks' | 'runes' | 'rain' | 'fireflies';
+  particleKind: DuelParticleKind;
+  isCustom?: boolean;
+}
+
+export const DUEL_PARTICLE_OPTIONS: Array<{ id: DuelParticleKind; label: string }> = [
+  { id: 'none', label: 'Sem partículas' },
+  { id: 'dust', label: 'Poeira' },
+  { id: 'sparks', label: 'Faíscas' },
+  { id: 'rain', label: 'Chuva' },
+  { id: 'lights', label: 'Pontos de Luz' },
+  { id: 'leaves', label: 'Folhas / Flocos' },
+];
+
+function hexToRgba(hex: string, alpha: number): string {
+  const clean = (hex || '#d9a760').replace('#', '').trim();
+  const full =
+    clean.length === 3
+      ? clean
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : clean.padEnd(6, '0').slice(0, 6);
+  const num = parseInt(full, 16);
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+export function buildArenaPresetMetaFromCustom(custom: CustomDuelArenaPreset): DuelArenaPresetMeta {
+  const bg = custom.bgColor || '#1a1614';
+  const floor = custom.floorColor || '#2b231d';
+  const accent = custom.accentColor || '#d9a760';
+  const partLabel =
+    DUEL_PARTICLE_OPTIONS.find((p) => p.id === custom.particleKind)?.label || 'Sem partículas';
+
+  return {
+    id: custom.id,
+    name: custom.name || 'Customizado',
+    subtitle: `Fundo ${bg} · Partículas: ${partLabel}`,
+    bgColor: bg,
+    floorColor: floor,
+    skyGradient: `radial-gradient(ellipse at 50% 24%, ${bg} 0%, #090808 68%, #040404 100%)`,
+    floorGradient: `radial-gradient(circle at 50% 50%, ${hexToRgba(floor, 0.88)} 0%, ${hexToRgba(
+      bg,
+      0.96
+    )} 68%, #050505 100%)`,
+    floorGridColor: hexToRgba(accent, 0.25),
+    accentColor: accent,
+    ambientGlow: hexToRgba(accent, 0.26),
+    particleKind: custom.particleKind || 'dust',
+    isCustom: true,
+  };
 }
 
 export const DUEL_ARENA_PRESETS: DuelArenaPresetMeta[] = [
   {
     id: 'expedition_ruins',
-    name: 'Ruínas Monolíticas',
-    subtitle: 'Inspirado em Expedition 33 · Pedra ancestral & brasas douradas',
+    name: 'Âmbar · Poeira',
+    subtitle: 'Fundo âmbar escuro · Partículas de poeira',
+    bgColor: '#2c221e',
+    floorColor: '#48382c',
     skyGradient: 'radial-gradient(ellipse at 50% 25%, #2c221e 0%, #120e0c 58%, #070606 100%)',
-    floorGradient: 'radial-gradient(circle at 50% 50%, rgba(72, 56, 44, 0.88) 0%, rgba(22, 18, 15, 0.96) 68%, rgba(8, 7, 6, 1) 100%)',
+    floorGradient:
+      'radial-gradient(circle at 50% 50%, rgba(72, 56, 44, 0.88) 0%, rgba(22, 18, 15, 0.96) 68%, rgba(8, 7, 6, 1) 100%)',
     floorGridColor: 'rgba(217, 167, 96, 0.22)',
     accentColor: '#d9a760',
     ambientGlow: 'rgba(217, 167, 96, 0.24)',
-    particleKind: 'embers',
+    particleKind: 'dust',
   },
   {
     id: 'persona_crimson',
-    name: 'Metaverso Carmesim',
-    subtitle: 'Inspirado em Persona · Alto contraste rubro & ângulos estilizados',
+    name: 'Vermelho · Faíscas',
+    subtitle: 'Fundo vermelho escuro · Faíscas',
+    bgColor: '#450a0a',
+    floorColor: '#7f1d1d',
     skyGradient: 'radial-gradient(ellipse at 55% 20%, #450a0a 0%, #180404 55%, #050202 100%)',
-    floorGradient: 'radial-gradient(circle at 50% 50%, rgba(127, 29, 29, 0.78) 0%, rgba(24, 6, 6, 0.96) 65%, rgba(5, 2, 2, 1) 100%)',
+    floorGradient:
+      'radial-gradient(circle at 50% 50%, rgba(127, 29, 29, 0.78) 0%, rgba(24, 6, 6, 0.96) 65%, rgba(5, 2, 2, 1) 100%)',
     floorGridColor: 'rgba(239, 68, 68, 0.3)',
     accentColor: '#ef4444',
     ambientGlow: 'rgba(239, 68, 68, 0.28)',
-    particleKind: 'slashes',
-  },
-  {
-    id: 'pokemon_stadium',
-    name: 'Coliseu Tático',
-    subtitle: 'Inspirado em Pokémon · Plataformas de duelo & holofotes de arena',
-    skyGradient: 'radial-gradient(ellipse at 50% 18%, #1e293b 0%, #0f172a 58%, #04070d 100%)',
-    floorGradient: 'radial-gradient(circle at 50% 50%, rgba(30, 58, 95, 0.82) 0%, rgba(15, 23, 42, 0.96) 68%, rgba(4, 7, 13, 1) 100%)',
-    floorGridColor: 'rgba(56, 189, 248, 0.26)',
-    accentColor: '#38bdf8',
-    ambientGlow: 'rgba(56, 189, 248, 0.24)',
     particleKind: 'sparks',
   },
   {
+    id: 'pokemon_stadium',
+    name: 'Azul · Luzes',
+    subtitle: 'Fundo azul escuro · Pontos de luz',
+    bgColor: '#1e293b',
+    floorColor: '#1e3a5f',
+    skyGradient: 'radial-gradient(ellipse at 50% 18%, #1e293b 0%, #0f172a 58%, #04070d 100%)',
+    floorGradient:
+      'radial-gradient(circle at 50% 50%, rgba(30, 58, 95, 0.82) 0%, rgba(15, 23, 42, 0.96) 68%, rgba(4, 7, 13, 1) 100%)',
+    floorGridColor: 'rgba(56, 189, 248, 0.26)',
+    accentColor: '#38bdf8',
+    ambientGlow: 'rgba(56, 189, 248, 0.24)',
+    particleKind: 'lights',
+  },
+  {
     id: 'astral_sanctuary',
-    name: 'Santuário Astral',
-    subtitle: 'Círculo arcano 3D · Runas luminosas & poeira cósmica',
+    name: 'Roxo · Poeira',
+    subtitle: 'Fundo roxo escuro · Partículas de poeira',
+    bgColor: '#2e1065',
+    floorColor: '#4c1d95',
     skyGradient: 'radial-gradient(ellipse at 50% 22%, #2e1065 0%, #110626 60%, #05020c 100%)',
-    floorGradient: 'radial-gradient(circle at 50% 50%, rgba(76, 29, 149, 0.75) 0%, rgba(19, 9, 39, 0.95) 68%, rgba(5, 2, 12, 1) 100%)',
+    floorGradient:
+      'radial-gradient(circle at 50% 50%, rgba(76, 29, 149, 0.75) 0%, rgba(19, 9, 39, 0.95) 68%, rgba(5, 2, 12, 1) 100%)',
     floorGridColor: 'rgba(168, 85, 247, 0.28)',
     accentColor: '#a855f7',
     ambientGlow: 'rgba(168, 85, 247, 0.26)',
-    particleKind: 'runes',
+    particleKind: 'dust',
   },
   {
     id: 'noir_rain',
-    name: 'Asfalto & Chuva Noir',
-    subtitle: 'Investigação urbana · Reflexos úmidos & chuva cinemática',
+    name: 'Cinza · Chuva',
+    subtitle: 'Fundo cinza escuro · Chuva',
+    bgColor: '#1c242b',
+    floorColor: '#263038',
     skyGradient: 'radial-gradient(ellipse at 50% 20%, #1c242b 0%, #0d1114 60%, #050608 100%)',
-    floorGradient: 'radial-gradient(circle at 50% 50%, rgba(38, 48, 56, 0.85) 0%, rgba(14, 18, 22, 0.96) 68%, rgba(5, 6, 8, 1) 100%)',
+    floorGradient:
+      'radial-gradient(circle at 50% 50%, rgba(38, 48, 56, 0.85) 0%, rgba(14, 18, 22, 0.96) 68%, rgba(5, 6, 8, 1) 100%)',
     floorGridColor: 'rgba(148, 163, 184, 0.2)',
     accentColor: '#94a3b8',
     ambientGlow: 'rgba(148, 163, 184, 0.2)',
@@ -80,19 +151,77 @@ export const DUEL_ARENA_PRESETS: DuelArenaPresetMeta[] = [
   },
   {
     id: 'shadow_forest',
-    name: 'Bosque das Sombras',
-    subtitle: 'Fantasia sombria · Bruma rasteira & esporos luminescentes',
+    name: 'Verde · Folhas',
+    subtitle: 'Fundo verde escuro · Folhas / flocos',
+    bgColor: '#062e1e',
+    floorColor: '#14532d',
     skyGradient: 'radial-gradient(ellipse at 50% 22%, #062e1e 0%, #04170f 60%, #020805 100%)',
-    floorGradient: 'radial-gradient(circle at 50% 50%, rgba(20, 83, 45, 0.76) 0%, rgba(7, 26, 16, 0.96) 68%, rgba(2, 8, 5, 1) 100%)',
+    floorGradient:
+      'radial-gradient(circle at 50% 50%, rgba(20, 83, 45, 0.76) 0%, rgba(7, 26, 16, 0.96) 68%, rgba(2, 8, 5, 1) 100%)',
     floorGridColor: 'rgba(52, 211, 153, 0.24)',
     accentColor: '#10b981',
     ambientGlow: 'rgba(16, 185, 129, 0.24)',
-    particleKind: 'fireflies',
+    particleKind: 'leaves',
   },
 ];
 
-export function getDuelArenaPreset(id?: DuelArenaPresetId): DuelArenaPresetMeta {
-  return DUEL_ARENA_PRESETS.find((p) => p.id === id) || DUEL_ARENA_PRESETS[0];
+const CUSTOM_DUEL_PRESETS_KEY = 'folio_custom_duel_presets_v1';
+
+export function loadCustomDuelPresets(): CustomDuelArenaPreset[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_DUEL_PRESETS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as CustomDuelArenaPreset[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomDuelPreset(preset: CustomDuelArenaPreset): CustomDuelArenaPreset[] {
+  const existing = loadCustomDuelPresets().filter((p) => p.id !== preset.id);
+  const next = [...existing, preset];
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(CUSTOM_DUEL_PRESETS_KEY, JSON.stringify(next));
+    } catch {
+      // ignore quota
+    }
+  }
+  return next;
+}
+
+export function deleteCustomDuelPreset(id: string): CustomDuelArenaPreset[] {
+  const next = loadCustomDuelPresets().filter((p) => p.id !== id);
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(CUSTOM_DUEL_PRESETS_KEY, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }
+  return next;
+}
+
+export function getAllDuelArenaPresets(): DuelArenaPresetMeta[] {
+  const customs = loadCustomDuelPresets().map(buildArenaPresetMetaFromCustom);
+  return [...DUEL_ARENA_PRESETS, ...customs];
+}
+
+export function getDuelArenaPreset(
+  id?: DuelArenaPresetId,
+  customStyle?: CustomDuelArenaPreset | null
+): DuelArenaPresetMeta {
+  if (customStyle && (!id || id === customStyle.id)) {
+    return buildArenaPresetMetaFromCustom(customStyle);
+  }
+  const builtIn = DUEL_ARENA_PRESETS.find((p) => p.id === id);
+  if (builtIn) return builtIn;
+  const savedCustom = loadCustomDuelPresets().find((p) => p.id === id);
+  if (savedCustom) return buildArenaPresetMetaFromCustom(savedCustom);
+  if (customStyle) return buildArenaPresetMetaFromCustom(customStyle);
+  return DUEL_ARENA_PRESETS[0];
 }
 
 const DUEL_CFG_STORAGE_PREFIX = 'folio_scene_duel_cfg_v1';
@@ -103,6 +232,7 @@ export function loadSceneDuelConfig(campaignId: string, scene: Scene | null): Sc
     bgMediaId: scene?.mediaId || '',
     bgMediaKind: scene?.mediaKind || 'image',
     arenaPreset: 'expedition_ruins',
+    customArenaStyle: null,
     musicTrackId: scene?.linkedMusicId || '',
   };
   if (!scene || typeof window === 'undefined') return fallback;
@@ -115,6 +245,7 @@ export function loadSceneDuelConfig(campaignId: string, scene: Scene | null): Sc
       bgMediaId: typeof parsed.bgMediaId === 'string' ? parsed.bgMediaId : fallback.bgMediaId,
       bgMediaKind: parsed.bgMediaKind || fallback.bgMediaKind,
       arenaPreset: parsed.arenaPreset || fallback.arenaPreset,
+      customArenaStyle: parsed.customArenaStyle || null,
       musicTrackId:
         typeof parsed.musicTrackId === 'string' ? parsed.musicTrackId : fallback.musicTrackId,
     };
@@ -336,32 +467,21 @@ export function extractActionsFromSheetAndToken(
   // 4. Universal Tactical Fallbacks so every combatant has a full turn-based kit
   pushUnique({
     id: 'act_basic_strike',
-    label: 'Golpe Direto',
+    label: 'Ataque',
     category: 'attack',
     formula: defaultHitFormula,
-    damageFormula: '1d8 + 2',
+    damageFormula: '1d8',
     damageLabel: 'Dano',
-    description: 'Ataque corpo a corpo ou disparo padrão contra o oponente.',
-    sourceLabel: 'Ação Tática',
-  });
-
-  pushUnique({
-    id: 'act_heavy_strike',
-    label: 'Investida Pesada',
-    category: 'attack',
-    formula: defaultHitFormula,
-    damageFormula: '2d8 + 4',
-    damageLabel: 'Dano Crítico',
-    description: 'Golpe devastador focado em causar alto impacto.',
-    sourceLabel: 'Ação Tática',
+    description: 'Rolagem de ataque padrão.',
+    sourceLabel: 'Padrão',
   });
 
   pushUnique({
     id: 'act_defensive_stance',
-    label: 'Postura Defensiva & Esquiva',
+    label: 'Defesa / Esquiva',
     category: 'defense',
     formula: defaultHitFormula,
-    description: 'Assume guarda alta e prepara esquiva ou contra-ataque.',
+    description: 'Rolagem de defesa ou esquiva.',
     sourceLabel: 'Defesa',
   });
 

@@ -47,7 +47,7 @@ import {
   type CampaignUploadContext,
 } from '../lib/mediaStore';
 import { detectSceneMediaKind, type MediaOptimizeProfile } from '../lib/mediaOptimizer';
-import { DUEL_ARENA_PRESETS } from '../lib/duelEngine';
+import { getAllDuelArenaPresets, loadCustomDuelPresets } from '../lib/duelEngine';
 import type { VaultAssetItem } from '../lib/assetVault';
 import { TokenEditorPanel, TOKEN_SWATCH_COLORS } from './TokenEditorPanel';
 
@@ -825,17 +825,21 @@ export function ScenesHandoutsPanel({
                 <div className="grid grid-cols-1 gap-2">
                   <select
                     value={activeSceneDuelConfig.arenaPreset}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const nextId = e.target.value as DuelArenaPresetId;
+                      const customObj =
+                        loadCustomDuelPresets().find((c) => c.id === nextId) || null;
                       onUpdateSceneDuelConfig({
                         ...activeSceneDuelConfig,
-                        arenaPreset: e.target.value as DuelArenaPresetId,
-                      })
-                    }
+                        arenaPreset: nextId,
+                        customArenaStyle: customObj,
+                      });
+                    }}
                     className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface"
                   >
-                    {DUEL_ARENA_PRESETS.map((p) => (
+                    {getAllDuelArenaPresets().map((p) => (
                       <option key={p.id} value={p.id}>
-                        Arena 3D: {p.name}
+                        Cor & Partículas: {p.name}
                       </option>
                     ))}
                   </select>

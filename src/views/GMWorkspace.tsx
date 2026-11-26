@@ -62,7 +62,6 @@ import { resolveMediaUrl } from '../lib/mediaStore';
 import {
   findSheetForToken,
   loadSceneDuelConfig,
-  playCombatCursorSfx,
   saveSceneDuelConfig,
 } from '../lib/duelEngine';
 import {
@@ -936,7 +935,6 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   }) {
     if (!campaign || !activeScene || !activeDuel) return;
     const attacker = params.side === 'player' ? activeDuel.player : activeDuel.npc;
-    const defenderSide = params.side === 'player' ? 'npc' : 'player';
 
     const attackerToken = activeScene.tokens.find((t) => t.id === attacker.tokenId);
     const attackerSheet = attacker.sheetId
@@ -956,88 +954,14 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       forceExplode: false,
     });
 
-    const isDefense = params.action.category === 'defense';
-    const isSpell = params.action.category === 'spell';
-    const isHeal =
-      isSpell &&
-      /cura|heal|vida|restaur|bênção|bencao/i.test(
-        `${params.action.label} ${params.action.description || ''}`
-      );
-    const fxKind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield' = isHeal
-      ? 'heal'
-      : isDefense
-      ? 'shield'
-      : isSpell
-      ? 'arcane'
-      : /tiro|arco|pistola|rifle|flecha|disparo|shot/i.test(params.action.label)
-      ? 'shot'
-      : /soco|martelo|maça|maca|porrada|chute|esmag/i.test(params.action.label)
-      ? 'blunt'
-      : 'blade';
-
-    playCombatCursorSfx(fxKind);
-
-    const now = Date.now();
-    const shouldApplyHpDelta =
-      params.rollDamageOnly ||
-      isHeal ||
-      (!params.action.damageFormula && params.action.category === 'attack');
-
-    const nextPlayer = { ...activeDuel.player };
-    const nextNpc = { ...activeDuel.npc };
-
-    if (params.side === 'player') {
-      nextPlayer.lastLungeAtMs = now;
-    } else {
-      nextNpc.lastLungeAtMs = now;
-    }
-
-    let nextEffect: ActiveDuelState['lastEffect'] = null;
-
-    if (isHeal || isDefense) {
-      const selfTarget = params.side === 'player' ? nextPlayer : nextNpc;
-      if (isHeal && evalResult.total > 0) {
-        selfTarget.hpCurrent = Math.min(selfTarget.hpMax, selfTarget.hpCurrent + evalResult.total);
-      }
-      if (isDefense) {
-        selfTarget.isDefending = true;
-      }
-      nextEffect = {
-        id: `fx_${now}`,
-        timestampMs: now,
-        targetSide: params.side,
-        kind: fxKind,
-        damageAmount: Math.max(0, evalResult.total),
-        label: `${params.action.label} (${evalResult.total})`,
-        isCrit: evalResult.outcome === 'crit',
-      };
-    } else {
-      const targetObj = defenderSide === 'player' ? nextPlayer : nextNpc;
-      targetObj.lastHitAtMs = now;
-      if (shouldApplyHpDelta && evalResult.total > 0) {
-        targetObj.hpCurrent = Math.max(0, targetObj.hpCurrent - evalResult.total);
-      }
-      nextEffect = {
-        id: `fx_${now}`,
-        timestampMs: now,
-        targetSide: defenderSide,
-        kind: fxKind,
-        damageAmount: shouldApplyHpDelta ? Math.max(0, evalResult.total) : 0,
-        label: `${params.action.label} · ${evalResult.total}`,
-        isCrit: evalResult.outcome === 'crit',
-      };
-    }
-
     const actionDisplay = params.rollDamageOnly
       ? `${params.action.label} (Dano)`
       : params.action.label;
 
+    // Rolling dice ONLY rolls to check/see result — damage animation ONLY happens when attacking with the mouse!
     const nextDuel: ActiveDuelState = {
       ...activeDuel,
-      player: nextPlayer,
-      npc: nextNpc,
-      lastActionSummary: `${attacker.name} usou ${actionDisplay}: ${evalResult.total} (${evalResult.summary})`,
-      lastEffect: nextEffect,
+      lastActionSummary: `${attacker.name} rolou ${actionDisplay}: ${evalResult.total} (${evalResult.summary})`,
     };
 
     await handleUpdateDuel(nextDuel);

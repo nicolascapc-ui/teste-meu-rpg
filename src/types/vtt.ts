@@ -346,7 +346,19 @@ export type DuelArenaPresetId =
   | 'pokemon_stadium'
   | 'astral_sanctuary'
   | 'noir_rain'
-  | 'shadow_forest';
+  | 'shadow_forest'
+  | string;
+
+export type DuelParticleKind = 'none' | 'dust' | 'sparks' | 'rain' | 'lights' | 'leaves';
+
+export interface CustomDuelArenaPreset {
+  id: string;
+  name: string;
+  bgColor: string;
+  floorColor: string;
+  accentColor: string;
+  particleKind: DuelParticleKind;
+}
 
 export type DuelCameraAngle =
   | 'dynamic'
@@ -405,6 +417,7 @@ export interface ActiveDuelState {
   activeTurn: 'player' | 'npc';
   round: number;
   arenaPreset: DuelArenaPresetId;
+  customArenaStyle?: CustomDuelArenaPreset | null;
   cameraAngle: DuelCameraAngle;
   bgUrl: string;
   bgMediaId?: string;
@@ -423,6 +436,7 @@ export interface SceneDuelConfig {
   bgMediaId: string;
   bgMediaKind?: SceneMediaKind;
   arenaPreset: DuelArenaPresetId;
+  customArenaStyle?: CustomDuelArenaPreset | null;
   musicTrackId: string;
 }
 

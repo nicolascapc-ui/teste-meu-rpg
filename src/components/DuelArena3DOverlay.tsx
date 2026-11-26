@@ -1,34 +1,33 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Camera,
   Crosshair,
   Dices,
   Eye,
   EyeOff,
   Flame,
   Hammer,
-  Heart,
   ImagePlus,
   Lock,
-  Music,
+  Palette,
   Plus,
   RotateCcw,
-  Shield,
   Sparkles,
   Swords,
-  Wand2,
+  Trash2,
   X,
 } from 'lucide-react';
 import type {
   ActiveDuelState,
   AudioTrack,
   CharacterSheet,
+  CustomDuelArenaPreset,
   DuelActionItem,
   DuelArenaPresetId,
   DuelCameraAngle,
   DuelCombatantState,
   DuelCursorAttackMode,
   DuelLiveEffect,
+  DuelParticleKind,
   Scene,
   SceneDuelConfig,
   SceneMediaKind,
@@ -36,10 +35,14 @@ import type {
 } from '../types/vtt';
 import {
   buildCombatantFromTokenAndSheets,
-  DUEL_ARENA_PRESETS,
+  deleteCustomDuelPreset,
+  DUEL_PARTICLE_OPTIONS,
   findSheetForToken,
+  getAllDuelArenaPresets,
   getDuelArenaPreset,
+  loadCustomDuelPresets,
   playCombatCursorSfx,
+  saveCustomDuelPreset,
 } from '../lib/duelEngine';
 import {
   resolveMediaUrl,
@@ -97,9 +100,22 @@ export function DuelSetupModal({
     setNpcSheetId(findSheetForToken(npcToken, sheets)?.id || '');
   }, [playerToken, npcToken, sheets]);
 
+  const [allPresets, setAllPresets] = useState(() => getAllDuelArenaPresets());
   const [arenaPreset, setArenaPreset] = useState<DuelArenaPresetId>(
     initialConfig.arenaPreset || 'expedition_ruins'
   );
+  const [customArenaStyle, setCustomArenaStyle] = useState<CustomDuelArenaPreset | null>(
+    initialConfig.customArenaStyle || null
+  );
+
+  // Custom Preset Creator state
+  const [showCustomCreator, setShowCustomCreator] = useState(false);
+  const [customName, setCustomName] = useState('');
+  const [customBgColor, setCustomBgColor] = useState('#1c1917');
+  const [customFloorColor, setCustomFloorColor] = useState('#292524');
+  const [customAccentColor, setCustomAccentColor] = useState('#f59e0b');
+  const [customParticleKind, setCustomParticleKind] = useState<DuelParticleKind>('dust');
+
   const [bgUrl, setBgUrl] = useState(initialConfig.bgUrl || scene.imageUrl || '');
   const [bgMediaId, setBgMediaId] = useState(initialConfig.bgMediaId || scene.mediaId || '');
   const [bgMediaKind, setBgMediaKind] = useState<SceneMediaKind>(
@@ -107,7 +123,6 @@ export function DuelSetupModal({
   );
   const [uploadingBg, setUploadingBg] = useState(false);
 
-  // Prefer Duel Music tracks first, then regular music tracks
   const duelMusicTracks = useMemo(
     () => audioTracks.filter((t) => t.layer === 'music' && t.synthPreset === 'duel'),
     [audioTracks]
@@ -120,7 +135,9 @@ export function DuelSetupModal({
   const [musicTrackId, setMusicTrackId] = useState<string>(
     initialConfig.musicTrackId || duelMusicTracks[0]?.id || scene.linkedMusicId || ''
   );
-  const [hidePlayerActionsOnScreen, setHidePlayerActionsOnScreen] = useState(false);
+
+  // Default to TRUE: players only see the 3D arena, the 2 confronting tokens in dynamic perspective, and reactive effects
+  const [hidePlayerActionsOnScreen, setHidePlayerActionsOnScreen] = useState(true);
 
   const [playerThumb, setPlayerThumb] = useState('');
   const [npcThumb, setNpcThumb] = useState('');
@@ -191,12 +208,48 @@ export function DuelSetupModal({
     }
   }
 
+  function handleSelectPreset(id: DuelArenaPresetId) {
+    setArenaPreset(id);
+    const savedCustom = loadCustomDuelPresets().find((p) => p.id === id) || null;
+    setCustomArenaStyle(savedCustom);
+  }
+
+  function handleCreateCustomPreset() {
+    const name = customName.trim() || `Preset ${allPresets.length + 1}`;
+    const created: CustomDuelArenaPreset = {
+      id: `custom_${Date.now().toString(36)}`,
+      name,
+      bgColor: customBgColor,
+      floorColor: customFloorColor,
+      accentColor: customAccentColor,
+      particleKind: customParticleKind,
+    };
+    saveCustomDuelPreset(created);
+    setAllPresets(getAllDuelArenaPresets());
+    setArenaPreset(created.id);
+    setCustomArenaStyle(created);
+    setCustomName('');
+    setShowCustomCreator(false);
+    onNotify(`Preset "${created.name}" criado e selecionado.`);
+  }
+
+  function handleDeleteCustomPreset(id: string) {
+    deleteCustomDuelPreset(id);
+    const updated = getAllDuelArenaPresets();
+    setAllPresets(updated);
+    if (arenaPreset === id) {
+      setArenaPreset('expedition_ruins');
+      setCustomArenaStyle(null);
+    }
+  }
+
   function handleConfirmStart() {
     const savedConfig: SceneDuelConfig = {
       bgUrl,
       bgMediaId,
       bgMediaKind,
       arenaPreset,
+      customArenaStyle,
       musicTrackId,
     };
 
@@ -206,6 +259,7 @@ export function DuelSetupModal({
       activeTurn: 'player',
       round: 1,
       arenaPreset,
+      customArenaStyle,
       cameraAngle: 'dynamic',
       bgUrl,
       bgMediaId,
@@ -248,47 +302,48 @@ export function DuelSetupModal({
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] items-center gap-3">
             {/* Player Side */}
             <div className="border vtt-border vtt-canvas p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-emerald-950/80 text-emerald-300 border border-emerald-700/60">
+                  Lado A · Jogador
+                </span>
+                <span className="text-[11px] font-semibold tabular-nums text-emerald-400">
+                  {previewPlayerCombatant.hpCurrent}/{previewPlayerCombatant.hpMax} PV
+                </span>
+              </div>
               <div className="flex items-center gap-2.5">
                 <div
-                  className="w-12 h-12 rounded-full border-2 overflow-hidden shrink-0 flex items-center justify-center bg-stone-900 text-stone-100 font-bold"
-                  style={{ borderColor: previewPlayerCombatant.color }}
+                  className="w-12 h-12 rounded-full border-2 overflow-hidden shrink-0 flex items-center justify-center bg-stone-900 text-stone-200 font-bold"
+                  style={{ borderColor: playerToken.outlineColor || playerToken.color }}
                 >
                   {playerThumb ? (
                     <img
                       src={playerThumb}
-                      alt={previewPlayerCombatant.name}
+                      alt={playerToken.name}
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <span>{previewPlayerCombatant.name.slice(0, 2).toUpperCase()}</span>
+                    <span>{playerToken.name.slice(0, 2).toUpperCase()}</span>
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
-                    Jogador / Aliado
-                  </span>
-                  <p className="text-sm font-bold font-typewriter truncate">
-                    {previewPlayerCombatant.name}
-                  </p>
+                  <p className="font-bold font-typewriter text-sm truncate">{playerToken.name}</p>
                   <p className="text-[11px] vtt-muted truncate">
-                    PV: {previewPlayerCombatant.hpCurrent}/{previewPlayerCombatant.hpMax} ·{' '}
-                    {previewPlayerCombatant.actions.length} ações lidas
+                    {previewPlayerCombatant.actions.length} ação(ões) lidas da ficha
                   </p>
                 </div>
               </div>
-
-              <label className="block space-y-1">
-                <span className="text-[10px] vtt-muted">Ficha vinculada (Modular ou PDF):</span>
+              <label className="block space-y-1 pt-1">
+                <span className="text-[11px] vtt-muted">Ficha vinculada (Modular ou PDF):</span>
                 <select
                   value={playerSheetId}
                   onChange={(e) => setPlayerSheetId(e.target.value)}
-                  className="w-full px-2 py-1.5 text-xs border vtt-border vtt-surface"
+                  className="w-full px-2 py-1.5 border vtt-border vtt-surface text-xs"
                 >
-                  <option value="">Sem ficha (usar valores básicos)</option>
+                  <option value="">Sem ficha (usar notas do token)</option>
                   {sheets.map((s) => (
                     <option key={s.id} value={s.id}>
-                      {s.name} ({s.templateId}
+                      {s.name} ({s.templateId || 'Sistema'}
                       {s.mode === 'pdf' ? ' · PDF' : ''})
                     </option>
                   ))}
@@ -296,14 +351,14 @@ export function DuelSetupModal({
               </label>
             </div>
 
-            {/* Swap Button */}
+            {/* Swap Roles Button */}
             <div className="flex flex-col items-center justify-center gap-1">
               <span className="text-base font-bold font-typewriter vtt-accent-text">VS</span>
               <button
                 type="button"
-                onClick={() => setSwapped((v) => !v)}
-                className="px-2.5 py-1 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1"
-                title="Inverter quem é o Player e quem é o NPC"
+                onClick={() => setSwapped((s) => !s)}
+                className="px-2.5 py-1.5 border vtt-border vtt-surface hover:opacity-80 flex items-center gap-1 text-[11px]"
+                title="Inverter quem é o Jogador e quem é o NPC/Inimigo"
               >
                 <RotateCcw className="w-3 h-3" />
                 Inverter
@@ -312,48 +367,49 @@ export function DuelSetupModal({
 
             {/* NPC / Enemy Side */}
             <div className="border vtt-border vtt-canvas p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 bg-red-950/80 text-red-300 border border-red-700/60 flex items-center gap-1">
+                  <Lock className="w-2.5 h-2.5" />
+                  Lado B · NPC / Oponente
+                </span>
+                <span className="text-[11px] font-semibold tabular-nums text-red-400">
+                  {previewNpcCombatant.hpCurrent}/{previewNpcCombatant.hpMax} PV
+                </span>
+              </div>
               <div className="flex items-center gap-2.5">
                 <div
-                  className="w-12 h-12 rounded-full border-2 overflow-hidden shrink-0 flex items-center justify-center bg-stone-900 text-stone-100 font-bold"
-                  style={{ borderColor: previewNpcCombatant.color }}
+                  className="w-12 h-12 rounded-full border-2 overflow-hidden shrink-0 flex items-center justify-center bg-stone-900 text-stone-200 font-bold"
+                  style={{ borderColor: npcToken.outlineColor || npcToken.color }}
                 >
                   {npcThumb ? (
                     <img
                       src={npcThumb}
-                      alt={previewNpcCombatant.name}
+                      alt={npcToken.name}
                       referrerPolicy="no-referrer"
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <span>{previewNpcCombatant.name.slice(0, 2).toUpperCase()}</span>
+                    <span>{npcToken.name.slice(0, 2).toUpperCase()}</span>
                   )}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-red-600 dark:text-red-400 flex items-center gap-1">
-                    <Lock className="w-2.5 h-2.5" />
-                    NPC / Inimigo (Ações Ocultas)
-                  </span>
-                  <p className="text-sm font-bold font-typewriter truncate">
-                    {previewNpcCombatant.name}
-                  </p>
+                  <p className="font-bold font-typewriter text-sm truncate">{npcToken.name}</p>
                   <p className="text-[11px] vtt-muted truncate">
-                    PV: {previewNpcCombatant.hpCurrent}/{previewNpcCombatant.hpMax} ·{' '}
-                    {previewNpcCombatant.actions.length} golpes secretos
+                    {previewNpcCombatant.actions.length} golpe(s) secretos (Só Mestre)
                   </p>
                 </div>
               </div>
-
-              <label className="block space-y-1">
-                <span className="text-[10px] vtt-muted">Ficha do NPC (Modular ou PDF):</span>
+              <label className="block space-y-1 pt-1">
+                <span className="text-[11px] vtt-muted">Ficha do NPC (Modular ou PDF):</span>
                 <select
                   value={npcSheetId}
                   onChange={(e) => setNpcSheetId(e.target.value)}
-                  className="w-full px-2 py-1.5 text-xs border vtt-border vtt-surface"
+                  className="w-full px-2 py-1.5 border vtt-border vtt-surface text-xs"
                 >
-                  <option value="">Sem ficha (usar golpes táticos + notas)</option>
+                  <option value="">Sem ficha (usar notas do token)</option>
                   {sheets.map((s) => (
                     <option key={s.id} value={s.id}>
-                      {s.name} ({s.templateId}
+                      {s.name} ({s.templateId || 'Sistema'}
                       {s.mode === 'pdf' ? ' · PDF' : ''})
                     </option>
                   ))}
@@ -362,116 +418,218 @@ export function DuelSetupModal({
             </div>
           </div>
 
-          {/* 3D Arena Atmosphere Preset + Per-Scene Duel Background */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t vtt-border pt-4">
-            <div className="space-y-2">
-              <label className="block font-semibold">Estilo da Arena 3D</label>
-              <div className="grid grid-cols-2 gap-1.5">
-                {DUEL_ARENA_PRESETS.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setArenaPreset(p.id)}
-                    className={`p-2 text-left border transition-colors ${
-                      arenaPreset === p.id
-                        ? 'vtt-accent-btn border-transparent font-semibold'
-                        : 'vtt-canvas vtt-border hover:vtt-subtle'
-                    }`}
-                  >
-                    <p className="text-xs truncate">{p.name}</p>
-                    <p className="text-[10px] opacity-75 truncate">{p.subtitle.split('·')[0]}</p>
-                  </button>
-                ))}
+          {/* Per-Scene 3D Arena Background & Direct Color/Particle Presets */}
+          <div className="border vtt-border vtt-canvas p-3.5 space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <p className="font-bold font-typewriter text-xs">
+                  Cenário 3D, Cores de Fundo & Partículas ({scene.name})
+                </p>
+                <p className="text-[11px] vtt-muted">
+                  Escolha uma cor e tipo de partícula direto ao ponto ou crie seu próprio preset.
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowCustomCreator((v) => !v)}
+                  className="px-2.5 py-1.5 border vtt-border vtt-surface hover:opacity-80 text-xs flex items-center gap-1"
+                >
+                  <Palette className="w-3.5 h-3.5 vtt-accent-text" />
+                  <span>{showCustomCreator ? 'Fechar Criador' : '+ Criar Preset'}</span>
+                </button>
+                <label className="px-2.5 py-1.5 text-xs font-semibold vtt-accent-btn cursor-pointer flex items-center gap-1.5 shrink-0">
+                  <ImagePlus className="w-3.5 h-3.5" />
+                  <span>{uploadingBg ? 'Enviando...' : 'Imagem / Vídeo 3D'}</span>
+                  <input
+                    type="file"
+                    accept="image/*,video/mp4,video/webm"
+                    className="hidden"
+                    disabled={uploadingBg}
+                    onChange={(e) => {
+                      void handleUploadDuelBg(e.target.files?.[0]);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
               </div>
             </div>
 
-            <div className="space-y-2.5">
-              <label className="block font-semibold">
-                Fundo 3D Específico de Duelo ({scene.name})
-              </label>
-              <div className="border vtt-border vtt-canvas p-2.5 flex items-center gap-2.5">
-                <div className="w-16 h-12 bg-stone-900 border vtt-border overflow-hidden shrink-0 flex items-center justify-center">
-                  {bgPreview ? (
-                    bgMediaKind === 'video' ? (
-                      <video
-                        src={bgPreview}
-                        muted
-                        loop
-                        autoPlay
-                        playsInline
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <img
-                        src={bgPreview}
-                        alt="Fundo Duelo"
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
-                      />
-                    )
-                  ) : (
-                    <span className="text-[10px] text-stone-400">Arena 3D</span>
-                  )}
+            {/* Custom Preset Builder */}
+            {showCustomCreator && (
+              <div className="border vtt-border vtt-surface p-3 space-y-2.5">
+                <p className="text-xs font-bold font-typewriter">Novo Preset Customizado</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className="space-y-1">
+                    <span className="text-[11px] vtt-muted">Nome do preset</span>
+                    <input
+                      type="text"
+                      value={customName}
+                      onChange={(e) => setCustomName(e.target.value)}
+                      placeholder="Ex: Azul Noturno · Chuva"
+                      className="w-full px-2.5 py-1.5 border vtt-border vtt-canvas text-xs"
+                    />
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[11px] vtt-muted">Partículas</span>
+                    <select
+                      value={customParticleKind}
+                      onChange={(e) => setCustomParticleKind(e.target.value as DuelParticleKind)}
+                      className="w-full px-2.5 py-1.5 border vtt-border vtt-canvas text-xs"
+                    >
+                      {DUEL_PARTICLE_OPTIONS.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
-                <div className="min-w-0 flex-1 space-y-1">
-                  <div className="flex items-center gap-1.5">
-                    <label className="px-2.5 py-1 text-[11px] font-semibold vtt-accent-btn cursor-pointer inline-flex items-center gap-1">
-                      <ImagePlus className="w-3 h-3" />
-                      <span>{uploadingBg ? 'Enviando...' : 'Trocar Fundo 3D'}</span>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <label className="space-y-1">
+                    <span className="text-[11px] vtt-muted block">Cor de Fundo</span>
+                    <div className="flex items-center gap-1.5">
                       <input
-                        type="file"
-                        accept="image/*,video/mp4,video/webm"
-                        className="hidden"
-                        disabled={uploadingBg}
-                        onChange={(e) => {
-                          void handleUploadDuelBg(e.target.files?.[0]);
-                          e.target.value = '';
-                        }}
+                        type="color"
+                        value={customBgColor}
+                        onChange={(e) => setCustomBgColor(e.target.value)}
+                        className="w-8 h-7 border vtt-border bg-transparent cursor-pointer"
                       />
-                    </label>
-                    {(bgUrl !== scene.imageUrl || bgMediaId !== scene.mediaId) && (
+                      <span className="text-[11px] font-mono">{customBgColor}</span>
+                    </div>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[11px] vtt-muted block">Cor do Chão</span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="color"
+                        value={customFloorColor}
+                        onChange={(e) => setCustomFloorColor(e.target.value)}
+                        className="w-8 h-7 border vtt-border bg-transparent cursor-pointer"
+                      />
+                      <span className="text-[11px] font-mono">{customFloorColor}</span>
+                    </div>
+                  </label>
+                  <label className="space-y-1">
+                    <span className="text-[11px] vtt-muted block">Cor das Partículas</span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="color"
+                        value={customAccentColor}
+                        onChange={(e) => setCustomAccentColor(e.target.value)}
+                        className="w-8 h-7 border vtt-border bg-transparent cursor-pointer"
+                      />
+                      <span className="text-[11px] font-mono">{customAccentColor}</span>
+                    </div>
+                  </label>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowCustomCreator(false)}
+                    className="px-3 py-1 border vtt-border vtt-canvas text-xs"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCreateCustomPreset}
+                    className="px-3 py-1 text-xs font-semibold vtt-accent-btn"
+                  >
+                    Salvar Preset Customizado
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Direct Color & Particle Preset Cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {allPresets.map((preset) => {
+                const active = arenaPreset === preset.id;
+                return (
+                  <div
+                    key={preset.id}
+                    className={`relative border text-left transition-all flex items-center justify-between p-2.5 ${
+                      active
+                        ? 'vtt-accent-btn border-transparent font-semibold'
+                        : 'vtt-surface vtt-border hover:opacity-90'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleSelectPreset(preset.id)}
+                      className="flex-1 text-left min-w-0"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="w-3 h-3 rounded-full shrink-0 border border-white/30"
+                          style={{ backgroundColor: preset.accentColor }}
+                        />
+                        <span className="text-xs font-bold font-typewriter truncate">
+                          {preset.name}
+                        </span>
+                      </div>
+                      <p
+                        className={`text-[10px] truncate mt-0.5 ${
+                          active ? 'text-stone-100/90' : 'vtt-muted'
+                        }`}
+                      >
+                        {preset.subtitle}
+                      </p>
+                    </button>
+                    {preset.isCustom && (
                       <button
                         type="button"
-                        onClick={() => {
-                          setBgUrl(scene.imageUrl);
-                          setBgMediaId(scene.mediaId);
-                          setBgMediaKind(scene.mediaKind || 'image');
-                        }}
-                        className="px-2 py-1 text-[10px] border vtt-border vtt-surface"
+                        onClick={() => handleDeleteCustomPreset(preset.id)}
+                        className="p-1 ml-1 opacity-75 hover:opacity-100"
+                        title="Excluir preset customizado"
                       >
-                        Usar da Cena
+                        <Trash2 className="w-3 h-3" />
                       </button>
                     )}
                   </div>
-                  <input
-                    type="text"
-                    value={bgUrl.startsWith('idb://') ? '' : bgUrl}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setBgUrl(val);
-                      setBgMediaId('');
-                      setBgMediaKind(detectSceneMediaKind(val));
-                    }}
-                    placeholder="Ou cole link https:// de imagem/GIF/vídeo..."
-                    className="w-full px-2 py-1 text-[11px] border vtt-border vtt-surface"
-                  />
-                </div>
-              </div>
+                );
+              })}
+            </div>
 
-              {/* Duel Music Selector */}
-              <label className="block space-y-1">
-                <span className="font-semibold flex items-center gap-1">
-                  <Music className="w-3 h-3 vtt-accent-text" />
-                  Música de Modo Duelo (Fade Automático)
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+              <label className="space-y-1">
+                <span className="text-[11px] vtt-muted">
+                  Link de Imagem/Vídeo de Fundo 3D (opcional):
+                </span>
+                <input
+                  type="text"
+                  value={bgUrl.startsWith('idb://') ? '' : bgUrl}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setBgUrl(val);
+                    setBgMediaId('');
+                    setBgMediaKind(detectSceneMediaKind(val));
+                  }}
+                  placeholder="https://... ou use o botão Imagem / Vídeo 3D"
+                  className="w-full px-2.5 py-1.5 border vtt-border vtt-surface text-xs"
+                />
+                {bgPreview && (
+                  <p className="text-[10px] text-emerald-400 truncate">
+                    ✓ Cenário de fundo pronto para projeção 3D
+                  </p>
+                )}
+              </label>
+
+              <label className="space-y-1">
+                <span className="text-[11px] vtt-muted">
+                  Música de Modo Duelo (Fade Automático):
                 </span>
                 <select
                   value={musicTrackId}
                   onChange={(e) => setMusicTrackId(e.target.value)}
-                  className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface"
+                  className="w-full px-2.5 py-1.5 border vtt-border vtt-surface text-xs"
                 >
-                  <option value="">Manter trilha atual da cena</option>
+                  <option value="">Manter música atual da cena</option>
                   {duelMusicTracks.length > 0 && (
-                    <optgroup label="⚔️ Músicas de Modo Duelo">
+                    <optgroup label="⚔️ Músicas de Modo Duelo (Combate)">
                       {duelMusicTracks.map((t) => (
                         <option key={t.id} value={t.id}>
                           {t.name}
@@ -502,9 +660,11 @@ export function DuelSetupModal({
                 onChange={(e) => setHidePlayerActionsOnScreen(e.target.checked)}
               />
               <span>
-                <strong>Ocultar menu de ações do Player na Tela Compartilhada (TV)</strong>
+                <strong>
+                  Visualização limpa para Jogadores (apenas arena 3D, personagens e efeitos reativos)
+                </strong>
                 <span className="block text-[11px] vtt-muted">
-                  As ações do NPC já ficam 100% ocultas para jogadores; marque para deixar a TV apenas com o visual 3D cinematográfico.
+                  Ativado por padrão: os jogadores nunca veem barras de vida nem menus de ataques, apenas o confronto 3D em perspectiva dinâmica.
                 </span>
               </span>
             </label>
@@ -583,16 +743,17 @@ export function DuelArena3DOverlay({
   onSaveSceneDuelBg,
   onNotify,
 }: DuelArena3DOverlayProps) {
-  // Smooth subtle entrance & exit transition states
   const [renderedDuel, setRenderedDuel] = useState<ActiveDuelState | null>(duel);
-  const [visibilityPhase, setVisibilityPhase] = useState<'hidden' | 'entering' | 'active' | 'exiting'>(
-    duel ? 'active' : 'hidden'
-  );
+  const [visibilityPhase, setVisibilityPhase] = useState<
+    'hidden' | 'entering' | 'active' | 'exiting'
+  >(duel ? 'active' : 'hidden');
 
   useEffect(() => {
     if (duel) {
       setRenderedDuel(duel);
-      setVisibilityPhase((prev) => (prev === 'hidden' || prev === 'exiting' ? 'entering' : 'active'));
+      setVisibilityPhase((prev) =>
+        prev === 'hidden' || prev === 'exiting' ? 'entering' : 'active'
+      );
       const t = window.setTimeout(() => setVisibilityPhase('active'), 40);
       return () => window.clearTimeout(t);
     } else if (renderedDuel) {
@@ -609,9 +770,8 @@ export function DuelArena3DOverlay({
   const [playerImgUrl, setPlayerImgUrl] = useState('');
   const [npcImgUrl, setNpcImgUrl] = useState('');
 
-  // GM Interactive Cursor Damage Mode ("Fruit Ninja" Blade, Blunt Smash, Shot, Arcane)
+  // Broad, universal cursor attack modes: Corte ('blade'), Impacto ('blunt'), Tiro ('shot'), Magia ('arcane')
   const [cursorMode, setCursorMode] = useState<DuelCursorAttackMode>('blade');
-  const [cursorDamage, setCursorDamage] = useState<number>(5);
   const [activeActionSideTab, setActiveActionSideTab] = useState<'player' | 'npc'>('player');
   const [hudCollapsed, setHudCollapsed] = useState(false);
   const [showAddCustomMove, setShowAddCustomMove] = useState(false);
@@ -619,6 +779,19 @@ export function DuelArena3DOverlay({
   const [customMoveFormula, setCustomMoveFormula] = useState('1d20 + 5');
   const [customMoveDamage, setCustomMoveDamage] = useState('1d8 + 3');
   const [uploadingBg, setUploadingBg] = useState(false);
+
+  // Manual HP custom delta inputs for GM
+  const [manualPlayerDelta, setManualPlayerDelta] = useState<string>('5');
+  const [manualNpcDelta, setManualNpcDelta] = useState<string>('5');
+
+  // Live Custom Preset popover inside 3D Arena (GM only)
+  const [allPresets, setAllPresets] = useState(() => getAllDuelArenaPresets());
+  const [showArenaCustomizer, setShowArenaCustomizer] = useState(false);
+  const [liveCustomName, setLiveCustomName] = useState('');
+  const [liveBgColor, setLiveBgColor] = useState('#1c1917');
+  const [liveFloorColor, setLiveFloorColor] = useState('#292524');
+  const [liveAccentColor, setLiveAccentColor] = useState('#d9a760');
+  const [liveParticleKind, setLiveParticleKind] = useState<DuelParticleKind>('dust');
 
   // Subtle 3D Mouse Parallax
   const [mouseTilt, setMouseTilt] = useState<{ rx: number; ry: number }>({ rx: 0, ry: 0 });
@@ -634,17 +807,6 @@ export function DuelArena3DOverlay({
   const burstsRef = useRef<BurstParticle[]>([]);
   const lastSlashHitMsRef = useRef<Record<'player' | 'npc', number>>({ player: 0, npc: 0 });
   const lastProcessedEffectIdRef = useRef<string>('');
-
-  // Floating Damage Popups
-  const [floatingPopups, setFloatingPopups] = useState<
-    Array<{
-      id: string;
-      side: 'player' | 'npc';
-      text: string;
-      subtext?: string;
-      color: string;
-    }>
-  >([]);
 
   useEffect(() => {
     if (renderedDuel?.activeTurn) {
@@ -684,7 +846,7 @@ export function DuelArena3DOverlay({
     campaignId,
   ]);
 
-  // Replay incoming live effects (slash trails, blunt shockwaves, floating damage numbers) on Shared TV & Mobile
+  // Replay incoming live reactive effects (Corte, Impacto, Tiro, Magia) on Shared TV & Mobile — WITHOUT exposing HP numbers!
   useEffect(() => {
     const eff = renderedDuel?.lastEffect;
     if (!eff || eff.id === lastProcessedEffectIdRef.current) return;
@@ -692,39 +854,6 @@ export function DuelArena3DOverlay({
 
     // Play procedural combat sound
     playCombatCursorSfx(eff.kind);
-
-    // Spawn floating damage/effect number
-    const popupId = `pop_${eff.id}`;
-    const text =
-      eff.kind === 'heal'
-        ? `+${eff.damageAmount || 0} PV`
-        : eff.kind === 'shield'
-          ? 'DEFESA!'
-          : eff.damageAmount && eff.damageAmount > 0
-            ? `-${eff.damageAmount} PV`
-            : eff.label || 'IMPACTO!';
-    const color =
-      eff.kind === 'heal'
-        ? '#34d399'
-        : eff.kind === 'shield'
-          ? '#38bdf8'
-          : eff.isCrit
-            ? '#f59e0b'
-            : '#f87171';
-
-    setFloatingPopups((prev) => [
-      ...prev.slice(-6),
-      {
-        id: popupId,
-        side: eff.targetSide,
-        text,
-        subtext: eff.label,
-        color,
-      },
-    ]);
-    window.setTimeout(() => {
-      setFloatingPopups((prev) => prev.filter((p) => p.id !== popupId));
-    }, 1350);
 
     // Spawn canvas visual burst at target combatant's position
     const canvas = fxCanvasRef.current;
@@ -740,7 +869,6 @@ export function DuelArena3DOverlay({
       cy = tRect.top - cRect.top + tRect.height / 2;
     }
 
-    // If slashPoints were broadcast from GM's Fruit Ninja blade swipe, render them on TV too!
     if (eff.slashPoints && eff.slashPoints.length >= 2) {
       const now = performance.now();
       for (const pt of eff.slashPoints) {
@@ -783,10 +911,10 @@ export function DuelArena3DOverlay({
       kind: 'ring',
     });
 
-    // Diagonal razor slash line across target
-    if (kind === 'blade') {
-      const ang = slashAngle ?? -Math.PI / 4;
-      const len = 115;
+    // Diagonal slash line across target for 'blade' (Corte) or 'shot' (Tiro)
+    if (kind === 'blade' || kind === 'shot') {
+      const ang = slashAngle ?? (kind === 'shot' ? 0 : -Math.PI / 4);
+      const len = kind === 'shot' ? 85 : 120;
       burstsRef.current.push({
         x: cx - Math.cos(ang) * len,
         y: cy - Math.sin(ang) * len,
@@ -801,8 +929,8 @@ export function DuelArena3DOverlay({
       });
     }
 
-    // Radial sparks / blood / energy droplets
-    const count = kind === 'blunt' ? 26 : 22;
+    // Radial sparks / droplets
+    const count = kind === 'blunt' ? 28 : 22;
     for (let i = 0; i < count; i++) {
       const angle = (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.4;
       const speed = 2.5 + Math.random() * 8.5;
@@ -810,7 +938,7 @@ export function DuelArena3DOverlay({
         x: cx,
         y: cy,
         vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed - (kind === 'heal' ? 2.5 : 0),
+        vy: Math.sin(angle) * speed,
         size: 2.2 + Math.random() * 4.2,
         color: i % 3 === 0 ? '#ffffff' : mainColor,
         alpha: 1,
@@ -819,7 +947,7 @@ export function DuelArena3DOverlay({
     }
   }
 
-  // Continuous 60fps HTML5 2D Canvas Loop for 3D Atmospheric Particles + Fruit Ninja Blade Slash Trail + Impact Bursts
+  // Continuous 60fps HTML5 2D Canvas Loop for Atmospheric Particles + Slash Trail + Impact Bursts
   useEffect(() => {
     if (visibilityPhase === 'hidden' || !renderedDuel) return;
     const canvas = fxCanvasRef.current;
@@ -827,19 +955,28 @@ export function DuelArena3DOverlay({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const preset = getDuelArenaPreset(renderedDuel.arenaPreset);
+    const preset = getDuelArenaPreset(renderedDuel.arenaPreset, renderedDuel.customArenaStyle);
     let animId = 0;
 
-    const ambientParticles = Array.from({ length: 42 }, () => ({
+    const particleCount = preset.particleKind === 'none' ? 0 : 42;
+    const ambientParticles = Array.from({ length: particleCount }, () => ({
       x: Math.random(),
       y: Math.random(),
       z: 0.2 + Math.random() * 0.8,
-      vx: (Math.random() - 0.5) * 0.0008,
+      vx:
+        preset.particleKind === 'leaves'
+          ? 0.0008 + Math.random() * 0.0012
+          : (Math.random() - 0.5) * 0.0008,
       vy:
         preset.particleKind === 'rain'
-          ? 0.012 + Math.random() * 0.008
-          : -(0.0007 + Math.random() * 0.0014),
-      size: 1.5 + Math.random() * 3.2,
+          ? 0.013 + Math.random() * 0.008
+          : preset.particleKind === 'leaves'
+            ? 0.0012 + Math.random() * 0.0015
+            : -(0.0006 + Math.random() * 0.0014),
+      size:
+        preset.particleKind === 'lights'
+          ? 2.2 + Math.random() * 3.8
+          : 1.5 + Math.random() * 3.0,
       phase: Math.random() * Math.PI * 2,
     }));
 
@@ -876,6 +1013,14 @@ export function DuelArena3DOverlay({
           ctx.moveTo(px, py);
           ctx.lineTo(px - 6 * p.z, py + 24 * p.z);
           ctx.stroke();
+        } else if (preset.particleKind === 'sparks') {
+          ctx.strokeStyle = preset.accentColor;
+          ctx.globalAlpha = Math.max(0.1, Math.min(0.9, alpha));
+          ctx.lineWidth = 1.6 * p.z;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(px + Math.sin(p.phase) * 5, py - 7 * p.z);
+          ctx.stroke();
         } else {
           ctx.fillStyle = preset.accentColor;
           ctx.globalAlpha = Math.max(0.05, Math.min(0.85, alpha));
@@ -886,7 +1031,7 @@ export function DuelArena3DOverlay({
         ctx.restore();
       }
 
-      // 2. Active "Fruit Ninja" Katana Blade Slash Trail
+      // 2. Active Mouse Corte (Blade Slash) Trail
       const trail = slashTrailRef.current.filter((pt) => now - pt.createdAt < 240);
       slashTrailRef.current = trail;
       if (trail.length >= 2) {
@@ -898,7 +1043,6 @@ export function DuelArena3DOverlay({
           const progressRatio = i / trail.length;
           const width = Math.max(1.5, 14 * ageRatio * progressRatio);
 
-          // Outer crimson/gold energy glow
           ctx.strokeStyle = preset.accentColor;
           ctx.globalAlpha = Math.max(0, ageRatio * 0.65);
           ctx.lineWidth = width * 2.1;
@@ -908,7 +1052,6 @@ export function DuelArena3DOverlay({
           ctx.lineTo(p1.x, p1.y);
           ctx.stroke();
 
-          // Inner white-hot razor core
           ctx.strokeStyle = '#ffffff';
           ctx.globalAlpha = Math.max(0, ageRatio);
           ctx.lineWidth = width * 0.75;
@@ -963,7 +1106,7 @@ export function DuelArena3DOverlay({
         } else {
           b.x += b.vx;
           b.y += b.vy;
-          b.vy += 0.22; // gravity
+          b.vy += 0.22;
           b.alpha -= 0.032;
           if (b.alpha > 0.02) {
             ctx.save();
@@ -984,43 +1127,40 @@ export function DuelArena3DOverlay({
 
     animId = window.requestAnimationFrame(renderFrame);
     return () => window.cancelAnimationFrame(animId);
-  }, [visibilityPhase, renderedDuel?.arenaPreset]);
+  }, [visibilityPhase, renderedDuel?.arenaPreset, renderedDuel?.customArenaStyle]);
 
   if (visibilityPhase === 'hidden' || !renderedDuel) {
     return null;
   }
 
-  const preset = getDuelArenaPreset(renderedDuel.arenaPreset);
+  const preset = getDuelArenaPreset(renderedDuel.arenaPreset, renderedDuel.customArenaStyle);
   const nowMs = Date.now();
   const playerHitActive =
-    Boolean(renderedDuel.player.lastHitAtMs) && nowMs - (renderedDuel.player.lastHitAtMs || 0) < 650;
+    Boolean(renderedDuel.player.lastHitAtMs) &&
+    nowMs - (renderedDuel.player.lastHitAtMs || 0) < 650;
   const npcHitActive =
     Boolean(renderedDuel.npc.lastHitAtMs) && nowMs - (renderedDuel.npc.lastHitAtMs || 0) < 650;
-  const playerLungeActive =
-    Boolean(renderedDuel.player.lastLungeAtMs) &&
-    nowMs - (renderedDuel.player.lastLungeAtMs || 0) < 550;
-  const npcLungeActive =
-    Boolean(renderedDuel.npc.lastLungeAtMs) && nowMs - (renderedDuel.npc.lastLungeAtMs || 0) < 550;
 
-  // Apply direct damage/effect to a combatant and broadcast live to Shared TV & Players
-  function applyInteractiveStrike(
+  // Trigger ONLY the reactive visual + audio strike effect when the GM attacks with the mouse!
+  // (HP is controlled manually by the GM so players never see HP numbers or automatic deductions)
+  function triggerMouseReactiveStrike(
     targetSide: 'player' | 'npc',
     kind: DuelLiveEffect['kind'],
     slashPoints?: Array<{ x: number; y: number }>
   ) {
     if (!renderedDuel || mode !== 'gm' || !onUpdateDuel) return;
     const target = targetSide === 'player' ? renderedDuel.player : renderedDuel.npc;
-    const dmg = Math.max(0, cursorDamage);
-    const nextHp = Math.max(0, target.hpCurrent - dmg);
+    const attackerSide = targetSide === 'player' ? 'npc' : 'player';
+    const attacker = attackerSide === 'player' ? renderedDuel.player : renderedDuel.npc;
     const hitTime = Date.now();
 
     const effectLabels: Record<DuelLiveEffect['kind'], string> = {
-      blade: 'Corte de Lâmina',
-      blunt: 'Golpe Contundente',
-      shot: 'Disparo Certeiro',
-      arcane: 'Impacto Arcano',
-      heal: 'Restauração',
-      shield: 'Guarda Defensiva',
+      blade: 'Corte',
+      blunt: 'Impacto',
+      shot: 'Tiro',
+      arcane: 'Magia',
+      heal: 'Cura',
+      shield: 'Defesa',
     };
 
     const effect: DuelLiveEffect = {
@@ -1028,26 +1168,26 @@ export function DuelArena3DOverlay({
       timestampMs: hitTime,
       targetSide,
       kind,
-      damageAmount: dmg,
       label: effectLabels[kind],
       slashPoints,
     };
 
     const updatedTarget: DuelCombatantState = {
       ...target,
-      hpCurrent: nextHp,
       lastHitAtMs: hitTime,
+    };
+
+    const updatedAttacker: DuelCombatantState = {
+      ...attacker,
+      lastLungeAtMs: hitTime,
     };
 
     const nextDuel: ActiveDuelState = {
       ...renderedDuel,
-      player: targetSide === 'player' ? updatedTarget : renderedDuel.player,
-      npc: targetSide === 'npc' ? updatedTarget : renderedDuel.npc,
+      player: targetSide === 'player' ? updatedTarget : updatedAttacker,
+      npc: targetSide === 'npc' ? updatedTarget : updatedAttacker,
       lastEffect: effect,
-      lastActionSummary:
-        dmg > 0
-          ? `${effectLabels[kind]} em ${target.name} (-${dmg} PV)`
-          : `${effectLabels[kind]} atingiu ${target.name}!`,
+      lastActionSummary: `${effectLabels[kind]} em ${target.name}`,
     };
 
     onUpdateDuel(nextDuel);
@@ -1082,8 +1222,10 @@ export function DuelArena3DOverlay({
 
   function handleArenaPointerDown(e: React.PointerEvent) {
     if (mode !== 'gm') return;
-    const targetTag = (e.target as HTMLElement)?.tagName;
-    if (targetTag && ['BUTTON', 'INPUT', 'SELECT', 'LABEL'].includes(targetTag)) return;
+    const targetEl = e.target as HTMLElement | null;
+    if (targetEl && targetEl.closest('button, input, select, label, form, [data-gm-ui="true"]')) {
+      return;
+    }
 
     const arenaRect = arenaRef.current?.getBoundingClientRect();
     if (!arenaRect) return;
@@ -1100,9 +1242,8 @@ export function DuelArena3DOverlay({
     if (cursorMode === 'blunt' || cursorMode === 'shot' || cursorMode === 'arcane') {
       const hitSide = checkPointerHitsCombatant(e.clientX, e.clientY);
       if (hitSide) {
-        applyInteractiveStrike(hitSide, cursorMode);
+        triggerMouseReactiveStrike(hitSide, cursorMode);
       } else {
-        // Still play visual impact at click point even if on background
         playCombatCursorSfx(cursorMode);
         spawnImpactParticles(x, y, cursorMode);
       }
@@ -1116,10 +1257,9 @@ export function DuelArena3DOverlay({
     const nx = (e.clientX - arenaRect.left) / arenaRect.width;
     const ny = (e.clientY - arenaRect.top) / arenaRect.height;
 
-    // Subtle 3D camera parallax tilt
     setMouseTilt({
-      rx: Number(((0.5 - ny) * 5.5).toFixed(2)),
-      ry: Number(((nx - 0.5) * 8.5).toFixed(2)),
+      rx: Number(((0.5 - ny) * 5.0).toFixed(2)),
+      ry: Number(((nx - 0.5) * 8.0).toFixed(2)),
     });
 
     if (mode !== 'gm' || !isPointerDownRef.current || cursorMode !== 'blade') return;
@@ -1129,15 +1269,14 @@ export function DuelArena3DOverlay({
     const now = performance.now();
     slashTrailRef.current.push({ x, y, createdAt: now });
 
-    // Check if the blade swipe just sliced across either combatant ("Fruit Ninja" hit detection!)
     const hitSide = checkPointerHitsCombatant(e.clientX, e.clientY);
-    if (hitSide && Date.now() - lastSlashHitMsRef.current[hitSide] > 360) {
+    if (hitSide && Date.now() - lastSlashHitMsRef.current[hitSide] > 340) {
       lastSlashHitMsRef.current[hitSide] = Date.now();
       const recentNormalized = slashTrailRef.current.slice(-10).map((pt) => ({
         x: Number((pt.x / arenaRect.width).toFixed(3)),
         y: Number((pt.y / arenaRect.height).toFixed(3)),
       }));
-      applyInteractiveStrike(hitSide, 'blade', recentNormalized);
+      triggerMouseReactiveStrike(hitSide, 'blade', recentNormalized);
     }
   }
 
@@ -1145,35 +1284,30 @@ export function DuelArena3DOverlay({
     isPointerDownRef.current = false;
   }
 
-  function adjustCombatantHp(side: 'player' | 'npc', delta: number) {
+  // Silent manual HP adjustment for the GM (invisible to players, does NOT trigger damage animations)
+  function setCombatantHpManual(side: 'player' | 'npc', nextCurrent: number, nextMax?: number) {
     if (!renderedDuel || !onUpdateDuel) return;
     const target = side === 'player' ? renderedDuel.player : renderedDuel.npc;
-    const nextHp = Math.max(0, Math.min(target.hpMax, target.hpCurrent + delta));
-    const now = Date.now();
-    const isDamage = delta < 0;
+    const resolvedMax = Math.max(1, nextMax !== undefined ? nextMax : target.hpMax);
+    const resolvedCur = Math.max(0, Math.min(resolvedMax, Math.round(nextCurrent)));
 
     const updated: DuelCombatantState = {
       ...target,
-      hpCurrent: nextHp,
-      lastHitAtMs: isDamage ? now : target.lastHitAtMs,
-    };
-
-    const effect: DuelLiveEffect = {
-      id: `hp_${now}`,
-      timestampMs: now,
-      targetSide: side,
-      kind: isDamage ? 'blunt' : 'heal',
-      damageAmount: Math.abs(delta),
-      label: isDamage ? 'Dano' : 'Cura',
+      hpCurrent: resolvedCur,
+      hpMax: resolvedMax,
     };
 
     onUpdateDuel({
       ...renderedDuel,
       player: side === 'player' ? updated : renderedDuel.player,
       npc: side === 'npc' ? updated : renderedDuel.npc,
-      lastEffect: effect,
-      lastActionSummary: `${target.name}: ${delta > 0 ? `+${delta}` : delta} PV (${nextHp}/${target.hpMax})`,
     });
+  }
+
+  function adjustCombatantHpSilent(side: 'player' | 'npc', delta: number) {
+    if (!renderedDuel) return;
+    const target = side === 'player' ? renderedDuel.player : renderedDuel.npc;
+    setCombatantHpManual(side, target.hpCurrent + delta);
   }
 
   function handleAddQuickAction(e: React.FormEvent) {
@@ -1186,7 +1320,7 @@ export function DuelArena3DOverlay({
       formula: customMoveFormula.trim() || '1d20',
       damageFormula: customMoveDamage.trim() || undefined,
       damageLabel: 'Dano',
-      description: `Golpe adicionado em combate (${customMoveFormula})`,
+      description: `Fórmula: ${customMoveFormula}`,
       sourceLabel: 'Customizado',
     };
     const side = activeActionSideTab;
@@ -1202,7 +1336,29 @@ export function DuelArena3DOverlay({
     });
     setCustomMoveName('');
     setShowAddCustomMove(false);
-    onNotify?.(`Golpe "${newAction.label}" adicionado a ${target.name}.`);
+    onNotify?.(`Ação "${newAction.label}" adicionada a ${target.name}.`);
+  }
+
+  function handleSaveLiveCustomPreset() {
+    if (!renderedDuel || !onUpdateDuel) return;
+    const created: CustomDuelArenaPreset = {
+      id: `custom_${Date.now().toString(36)}`,
+      name: liveCustomName.trim() || `Preset ${allPresets.length + 1}`,
+      bgColor: liveBgColor,
+      floorColor: liveFloorColor,
+      accentColor: liveAccentColor,
+      particleKind: liveParticleKind,
+    };
+    saveCustomDuelPreset(created);
+    setAllPresets(getAllDuelArenaPresets());
+    onUpdateDuel({
+      ...renderedDuel,
+      arenaPreset: created.id,
+      customArenaStyle: created,
+    });
+    setLiveCustomName('');
+    setShowArenaCustomizer(false);
+    onNotify?.(`Preset "${created.name}" aplicado na arena 3D.`);
   }
 
   async function handleQuickBgUpload(file: File | undefined) {
@@ -1220,7 +1376,7 @@ export function DuelArena3DOverlay({
         bgMediaKind: res.mediaKind,
       });
       onSaveSceneDuelBg?.(res.url, res.mediaId, res.mediaKind);
-      onNotify?.(`Fundo 3D de duelo atualizado com "${res.fileName}".`);
+      onNotify?.(`Fundo 3D atualizado com "${res.fileName}".`);
     } catch (err) {
       onNotify?.(err instanceof Error ? err.message : 'Erro ao atualizar fundo 3D.');
     } finally {
@@ -1228,58 +1384,84 @@ export function DuelArena3DOverlay({
     }
   }
 
-  // Compute 3D Camera Transform based on cameraAngle, activeTurn, and mouse parallax
+  // Dynamic Turn-Based 3D Camera Perspective ("brinque com perspectiva")
   const effectiveCamera = renderedDuel.cameraAngle;
-  let camRotateX = 4 + mouseTilt.rx;
-  let camRotateY = mouseTilt.ry;
+  const isPlayerTurn = renderedDuel.activeTurn === 'player';
+
+  let camRotateX = 6 + mouseTilt.rx * 0.7;
+  let camRotateY = mouseTilt.ry * 0.7;
+  let camRotateZ = 0;
   let camTranslateZ = 0;
   let camTranslateX = 0;
+  let camTranslateY = 0;
 
   if (effectiveCamera === 'dynamic') {
-    if (renderedDuel.activeTurn === 'player') {
-      camRotateY = 9 + mouseTilt.ry * 0.7;
-      camRotateX = 5 + mouseTilt.rx * 0.7;
-      camTranslateX = 28;
+    if (isPlayerTurn) {
+      // Over-the-shoulder diagonal perspective behind Player looking across the 3D arena at the Opponent
+      camRotateY = 15 + mouseTilt.ry * 0.65;
+      camRotateX = 7.5 + mouseTilt.rx * 0.65;
+      camRotateZ = 1.3;
+      camTranslateX = 48;
+      camTranslateY = -8;
+      camTranslateZ = 34;
     } else {
-      camRotateY = -10 + mouseTilt.ry * 0.7;
-      camRotateX = 6 + mouseTilt.rx * 0.7;
-      camTranslateX = -28;
+      // Dramatic counter-angle swinging across the 3D arena when it's the Opponent's turn
+      camRotateY = -16 + mouseTilt.ry * 0.65;
+      camRotateX = 8.5 + mouseTilt.rx * 0.65;
+      camRotateZ = -1.4;
+      camTranslateX = -48;
+      camTranslateY = -6;
+      camTranslateZ = 34;
     }
   } else if (effectiveCamera === 'stadium') {
-    camRotateX = 11 + mouseTilt.rx * 0.6;
-    camRotateY = 14 + mouseTilt.ry * 0.6;
-    camTranslateZ = -35;
+    camRotateX = 12 + mouseTilt.rx * 0.6;
+    camRotateY = (isPlayerTurn ? 12 : -12) + mouseTilt.ry * 0.6;
+    camTranslateZ = -30;
   } else if (effectiveCamera === 'showdown') {
-    camRotateX = 2 + mouseTilt.rx * 0.5;
+    camRotateX = 3 + mouseTilt.rx * 0.5;
     camRotateY = mouseTilt.ry * 0.5;
     camTranslateZ = 25;
   } else if (effectiveCamera === 'focus_player') {
-    camRotateY = 16;
-    camTranslateX = 120;
-    camTranslateZ = 65;
+    camRotateY = 18;
+    camRotateZ = 1.5;
+    camTranslateX = 125;
+    camTranslateZ = 75;
   } else if (effectiveCamera === 'focus_npc') {
-    camRotateY = -16;
-    camTranslateX = -120;
-    camTranslateZ = 65;
+    camRotateY = -18;
+    camRotateZ = -1.5;
+    camTranslateX = -125;
+    camTranslateZ = 75;
   }
+
+  // Dynamic per-turn 3D depth for Player and Opponent standees
+  const playerLungeActive =
+    Boolean(renderedDuel.player.lastLungeAtMs) &&
+    nowMs - (renderedDuel.player.lastLungeAtMs || 0) < 520;
+  const npcLungeActive =
+    Boolean(renderedDuel.npc.lastLungeAtMs) &&
+    nowMs - (renderedDuel.npc.lastLungeAtMs || 0) < 520;
+
+  const playerZ = isPlayerTurn ? 78 : -16;
+  const playerScale = isPlayerTurn ? 1.07 : 0.93;
+  const playerRotY = isPlayerTurn ? 12 : 16;
+
+  const npcZ = !isPlayerTurn ? 72 : -22;
+  const npcScale = !isPlayerTurn ? 1.07 : 0.94;
+  const npcRotY = !isPlayerTurn ? -12 : -16;
 
   const resolvedMediaKind =
     renderedDuel.bgMediaKind || detectSceneMediaKind(renderedDuel.bgUrl || bgResolvedUrl);
 
-  // Determine whether the bottom action command dock should be visible on this screen
+  // By default hidePlayerActionsOnScreen is true so players ONLY see the 3D arena and the 2 tokens confronting
   const showBottomCommandDock =
-    mode === 'gm' ||
-    mode === 'player' ||
-    (mode === 'screen' && !renderedDuel.hidePlayerActionsOnScreen);
+    mode === 'gm' || (!renderedDuel.hidePlayerActionsOnScreen && mode === 'player');
 
   const cursorStyle =
     mode !== 'gm'
       ? 'cursor-default'
       : cursorMode === 'blade' || cursorMode === 'shot'
         ? 'cursor-crosshair'
-        : cursorMode === 'blunt' || cursorMode === 'arcane'
-          ? 'cursor-pointer'
-          : 'cursor-default';
+        : 'cursor-pointer';
 
   return (
     <div
@@ -1294,31 +1476,33 @@ export function DuelArena3DOverlay({
           : 'opacity-100 scale-100'
       }`}
     >
-      {/* 1. Deep 3D Perspective Viewport (Cyclorama Backdrop + 3D Tilted Arena Floor + 3D Pedestals) */}
+      {/* 1. Deep 3D Perspective Viewport (Cyclorama Backdrop + 3D Tilted Arena Floor + 3D Standees) */}
       <div
         className="absolute inset-0 flex items-center justify-center pointer-events-none"
         style={{
-          perspective: '1150px',
-          perspectiveOrigin: '50% 44%',
+          perspective: '1050px',
+          perspectiveOrigin: isPlayerTurn ? '46% 44%' : '54% 44%',
+          transition: 'perspective-origin 820ms cubic-bezier(0.22, 1, 0.36, 1)',
         }}
       >
         <div
-          className="relative w-full h-full transition-transform duration-700 ease-out"
+          className="relative w-full h-full"
           style={{
             transformStyle: 'preserve-3d',
-            transform: `translate3d(${camTranslateX}px, 0px, ${camTranslateZ}px) rotateX(${camRotateX}deg) rotateY(${camRotateY}deg)`,
+            transform: `translate3d(${camTranslateX}px, ${camTranslateY}px, ${camTranslateZ}px) rotateX(${camRotateX}deg) rotateY(${camRotateY}deg) rotateZ(${camRotateZ}deg)`,
+            transition: 'transform 820ms cubic-bezier(0.22, 1, 0.36, 1)',
           }}
         >
           {/* 3D Skybox / Custom Scene Duel Background Cyclorama */}
           <div
-            className="absolute inset-[-14%] overflow-hidden"
+            className="absolute inset-[-18%] overflow-hidden"
             style={{
-              transform: 'translateZ(-240px) scale(1.26)',
+              transform: 'translateZ(-260px) scale(1.32)',
               background: preset.skyGradient,
             }}
           >
             {bgResolvedUrl && (
-              <div className="w-full h-full relative opacity-55">
+              <div className="w-full h-full relative opacity-60">
                 {resolvedMediaKind === 'video' ? (
                   <video
                     src={bgResolvedUrl}
@@ -1340,7 +1524,7 @@ export function DuelArena3DOverlay({
                   className="absolute inset-0"
                   style={{
                     background:
-                      'linear-gradient(to bottom, rgba(7,6,6,0.35) 0%, rgba(7,6,6,0.15) 45%, rgba(7,6,6,0.92) 100%)',
+                      'linear-gradient(to bottom, rgba(7,6,6,0.3) 0%, rgba(7,6,6,0.15) 45%, rgba(7,6,6,0.92) 100%)',
                   }}
                 />
               </div>
@@ -1349,14 +1533,13 @@ export function DuelArena3DOverlay({
 
           {/* 3D Ground Plane (Tilted in 3D space with tactical concentric rings & grid) */}
           <div
-            className="absolute left-1/2 top-[48%] w-[160vw] h-[130vh] -translate-x-1/2 -translate-y-1/2"
+            className="absolute left-1/2 top-[52%] w-[170vw] h-[135vh] -translate-x-1/2 -translate-y-1/2"
             style={{
-              transform: 'rotateX(75deg) translateZ(-110px)',
+              transform: 'rotateX(76deg) translateZ(-115px)',
               background: preset.floorGradient,
               boxShadow: `0 0 140px 20px ${preset.ambientGlow} inset`,
             }}
           >
-            {/* Perspective Tactical Grid & Duel Rings */}
             <div
               className="w-full h-full opacity-75"
               style={{
@@ -1371,13 +1554,13 @@ export function DuelArena3DOverlay({
             />
           </div>
 
-          {/* Volumetric Rim Spotlight Beams */}
+          {/* Volumetric Rim Spotlight Beams shifting dynamically with active turn */}
           <div
-            className="absolute inset-0 pointer-events-none"
+            className="absolute inset-0 pointer-events-none transition-all duration-700"
             style={{
               background: `radial-gradient(circle at ${
-                renderedDuel.activeTurn === 'player' ? '28% 58%' : '72% 44%'
-              }, ${preset.ambientGlow} 0%, transparent 55%)`,
+                isPlayerTurn ? '26% 56%' : '74% 44%'
+              }, ${preset.ambientGlow} 0%, transparent 58%)`,
             }}
           />
 
@@ -1386,60 +1569,37 @@ export function DuelArena3DOverlay({
             className="absolute inset-0 max-w-6xl mx-auto px-6"
             style={{ transformStyle: 'preserve-3d' }}
           >
-            {/* PLAYER COMBATANT (Foreground-Left 3D Platform — Expedition 33 / Pokémon angle) */}
+            {/* PLAYER COMBATANT (Left 3D Platform) */}
             <div
               ref={playerBoxRef}
-              className="absolute left-[6%] sm:left-[11%] bottom-[22%] sm:bottom-[24%] w-48 sm:w-64 flex flex-col items-center pointer-events-auto"
+              className="absolute left-[7%] sm:left-[12%] bottom-[20%] sm:bottom-[22%] w-48 sm:w-64 flex flex-col items-center pointer-events-auto"
               style={{
-                transform: `translate3d(${playerLungeActive ? '68px' : playerHitActive ? '-26px' : '0px'}, ${
-                  playerLungeActive ? '-18px' : '0px'
-                }, 48px) rotateY(8deg)`,
-                transition: 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1)',
+                transform: `translate3d(${
+                  playerLungeActive ? '85px' : playerHitActive ? '-32px' : '0px'
+                }, ${playerLungeActive ? '-20px' : '0px'}, ${playerZ}px) rotateY(${playerRotY}deg) scale(${playerScale})`,
+                transition: 'transform 520ms cubic-bezier(0.22, 1, 0.36, 1)',
               }}
             >
-              {/* Floating Damage Popups for Player */}
-              {floatingPopups
-                .filter((p) => p.side === 'player')
-                .map((pop) => (
-                  <div
-                    key={pop.id}
-                    className="absolute -top-14 z-30 px-3 py-1 bg-black/85 border border-white/20 shadow-xl animate-bounce"
-                    style={{ color: pop.color }}
-                  >
-                    <p className="text-lg sm:text-xl font-extrabold font-typewriter tracking-tight">
-                      {pop.text}
-                    </p>
-                    {pop.subtext && (
-                      <p className="text-[10px] uppercase tracking-wider text-stone-300 text-center">
-                        {pop.subtext}
-                      </p>
-                    )}
-                  </div>
-                ))}
-
-              {/* Active Turn Indicator Crown */}
-              {renderedDuel.activeTurn === 'player' && (
+              {/* Subtle Turn Indicator */}
+              {isPlayerTurn && (
                 <div
                   className="mb-2 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-widest border bg-black/80"
                   style={{ borderColor: preset.accentColor, color: preset.accentColor }}
                 >
-                  ◆ Turno Ativo
+                  ◆ {renderedDuel.player.name}
                 </div>
               )}
 
               {/* 3D Character Standee Card */}
               <div
-                className={`relative w-36 h-36 sm:w-48 sm:h-48 rounded-2xl border-2 overflow-hidden bg-stone-900 flex items-center justify-center transition-all duration-200 ${
-                  playerHitActive ? 'ring-4 ring-red-500 brightness-125' : ''
+                className={`relative w-40 h-40 sm:w-52 sm:h-52 rounded-2xl border-2 overflow-hidden bg-stone-900 flex items-center justify-center transition-all duration-200 ${
+                  playerHitActive ? 'ring-4 ring-red-500 brightness-125 -rotate-3' : ''
                 }`}
                 style={{
-                  borderColor:
-                    renderedDuel.activeTurn === 'player'
-                      ? preset.accentColor
-                      : renderedDuel.player.color,
+                  borderColor: isPlayerTurn ? preset.accentColor : renderedDuel.player.color,
                   boxShadow: playerHitActive
-                    ? '0 0 38px 10px rgba(239, 68, 68, 0.85), 0 22px 40px rgba(0,0,0,0.85)'
-                    : `0 24px 48px rgba(0,0,0,0.85), 0 0 24px ${preset.ambientGlow}`,
+                    ? '0 0 44px 12px rgba(239, 68, 68, 0.9), 0 24px 44px rgba(0,0,0,0.88)'
+                    : `0 26px 52px rgba(0,0,0,0.88), 0 0 28px ${preset.ambientGlow}`,
                 }}
               >
                 {playerImgUrl ? (
@@ -1455,164 +1615,188 @@ export function DuelArena3DOverlay({
                   </span>
                 )}
 
-                {renderedDuel.player.isDefending && (
-                  <div className="absolute top-2 right-2 px-2 py-0.5 bg-sky-950/90 border border-sky-400 text-sky-200 text-[10px] font-bold flex items-center gap-1">
-                    <Shield className="w-3 h-3" />
-                    Guarda
-                  </div>
-                )}
-
                 {playerHitActive && (
-                  <div className="absolute inset-0 bg-red-600/35 pointer-events-none" />
+                  <div className="absolute inset-0 bg-red-600/40 pointer-events-none" />
                 )}
               </div>
 
-              {/* 3D Grounded Pedestal Disc & Contact Shadow */}
+              {/* 3D Grounded Pedestal Disc */}
               <div
                 className="w-44 sm:w-56 h-7 -mt-3 rounded-full border"
                 style={{
                   borderColor: preset.accentColor,
-                  background: `radial-gradient(ellipse at center, ${preset.ambientGlow} 0%, rgba(0,0,0,0.88) 75%)`,
+                  background: `radial-gradient(ellipse at center, ${preset.ambientGlow} 0%, rgba(0,0,0,0.9) 75%)`,
                   transform: 'rotateX(65deg)',
                   boxShadow: '0 14px 28px rgba(0,0,0,0.95)',
                 }}
               />
 
-              {/* Player Vital HUD Plate */}
-              <div className="mt-2 w-full bg-stone-950/90 border border-stone-700/80 p-2.5 shadow-2xl">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-xs sm:text-sm font-bold font-typewriter truncate">
+              {/* GM-ONLY Manual Vida (PV) Control Box — Completely invisible to Players & TV! */}
+              {mode === 'gm' && (
+                <div
+                  data-gm-ui="true"
+                  className="mt-2 w-full bg-stone-950/95 border border-stone-700/90 p-2.5 shadow-2xl space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span className="text-xs font-bold font-typewriter truncate">
                       {renderedDuel.player.name}
-                    </p>
-                    {renderedDuel.player.subtitle && (
-                      <p className="text-[10px] text-stone-400 truncate">
-                        {renderedDuel.player.subtitle}
-                      </p>
-                    )}
-                  </div>
-                  <span className="text-xs font-bold tabular-nums text-emerald-400 shrink-0">
-                    {renderedDuel.player.hpCurrent}/{renderedDuel.player.hpMax} PV
-                  </span>
-                </div>
-
-                {/* HP Bar */}
-                <div className="mt-1.5 w-full h-2 bg-stone-800 overflow-hidden">
-                  <div
-                    className="h-full bg-emerald-500 transition-all duration-300"
-                    style={{
-                      width: `${Math.max(
-                        0,
-                        Math.min(
-                          100,
-                          (renderedDuel.player.hpCurrent /
-                            Math.max(1, renderedDuel.player.hpMax)) *
-                            100
-                        )
-                      )}%`,
-                    }}
-                  />
-                </div>
-
-                {/* Secondary Bar (Sanity / Mana / PE) if available */}
-                {renderedDuel.player.mpMax !== undefined && (
-                  <div className="mt-1 flex items-center justify-between text-[10px] text-sky-300">
-                    <span className="truncate">{renderedDuel.player.mpLabel || 'Energia'}</span>
-                    <span className="tabular-nums">
-                      {renderedDuel.player.mpCurrent ?? renderedDuel.player.mpMax}/
-                      {renderedDuel.player.mpMax}
                     </span>
+                    <div className="flex items-center gap-1 text-xs font-bold tabular-nums text-emerald-400">
+                      <input
+                        type="number"
+                        value={renderedDuel.player.hpCurrent}
+                        onChange={(e) =>
+                          setCombatantHpManual('player', Number(e.target.value))
+                        }
+                        className="w-12 px-1 py-0.5 text-right bg-stone-900 border border-stone-700 text-emerald-300"
+                        title="Editar vida atual diretamente"
+                      />
+                      <span>/</span>
+                      <input
+                        type="number"
+                        value={renderedDuel.player.hpMax}
+                        onChange={(e) =>
+                          setCombatantHpManual(
+                            'player',
+                            renderedDuel.player.hpCurrent,
+                            Number(e.target.value)
+                          )
+                        }
+                        className="w-12 px-1 py-0.5 bg-stone-900 border border-stone-700 text-stone-300"
+                        title="Editar vida máxima"
+                      />
+                      <span className="text-[10px] text-stone-400">PV</span>
+                    </div>
                   </div>
-                )}
 
-                {/* Quick GM HP Controls */}
-                {mode === 'gm' && (
-                  <div className="mt-2 pt-1.5 border-t border-stone-800 flex items-center justify-between gap-1 text-[10px]">
-                    <span className="text-stone-400">PV Rápido:</span>
+                  {/* Visual HP Bar for GM only */}
+                  <div className="w-full h-1.5 bg-stone-800 overflow-hidden">
+                    <div
+                      className="h-full bg-emerald-500 transition-all duration-200"
+                      style={{
+                        width: `${Math.max(
+                          0,
+                          Math.min(
+                            100,
+                            (renderedDuel.player.hpCurrent /
+                              Math.max(1, renderedDuel.player.hpMax)) *
+                              100
+                          )
+                        )}%`,
+                      }}
+                    />
+                  </div>
+
+                  {/* Manual Subtract / Add Controls */}
+                  <div className="flex items-center justify-between gap-1 text-[10px]">
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => adjustCombatantHp('player', -5)}
-                        className="px-1.5 py-0.5 bg-red-950/80 border border-red-800/70 text-red-200 hover:bg-red-900"
+                        onClick={() => adjustCombatantHpSilent('player', -10)}
+                        className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
+                      >
+                        -10
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => adjustCombatantHpSilent('player', -5)}
+                        className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
                       >
                         -5
                       </button>
                       <button
                         type="button"
-                        onClick={() => adjustCombatantHp('player', -1)}
-                        className="px-1.5 py-0.5 bg-red-950/80 border border-red-800/70 text-red-200 hover:bg-red-900"
+                        onClick={() => adjustCombatantHpSilent('player', -1)}
+                        className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
                       >
                         -1
                       </button>
                       <button
                         type="button"
-                        onClick={() => adjustCombatantHp('player', 1)}
-                        className="px-1.5 py-0.5 bg-emerald-950/80 border border-emerald-800/70 text-emerald-200 hover:bg-emerald-900"
+                        onClick={() => adjustCombatantHpSilent('player', 1)}
+                        className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
                       >
                         +1
                       </button>
                       <button
                         type="button"
-                        onClick={() => adjustCombatantHp('player', 5)}
-                        className="px-1.5 py-0.5 bg-emerald-950/80 border border-emerald-800/70 text-emerald-200 hover:bg-emerald-900"
+                        onClick={() => adjustCombatantHpSilent('player', 5)}
+                        className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
                       >
                         +5
                       </button>
                     </div>
+
+                    {/* Custom Exact Value Subtract/Add */}
+                    <div className="flex items-center gap-0.5">
+                      <input
+                        type="number"
+                        min={1}
+                        value={manualPlayerDelta}
+                        onChange={(e) => setManualPlayerDelta(e.target.value)}
+                        className="w-10 px-1 py-0.5 bg-stone-900 border border-stone-700 text-center text-stone-200 tabular-nums"
+                        title="Valor personalizado de vida"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          adjustCombatantHpSilent(
+                            'player',
+                            -Math.max(1, Number(manualPlayerDelta) || 1)
+                          )
+                        }
+                        className="px-1.5 py-0.5 bg-red-800 hover:bg-red-700 text-white font-bold"
+                        title="Tirar esse valor da vida"
+                      >
+                        -
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          adjustCombatantHpSilent(
+                            'player',
+                            Math.max(1, Number(manualPlayerDelta) || 1)
+                          )
+                        }
+                        className="px-1.5 py-0.5 bg-emerald-800 hover:bg-emerald-700 text-white font-bold"
+                        title="Somar esse valor na vida"
+                      >
+                        +
+                      </button>
+                    </div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
 
-            {/* NPC / ENEMY COMBATANT (Midground-Right 3D Platform) */}
+            {/* NPC / ENEMY COMBATANT (Right 3D Platform) */}
             <div
               ref={npcBoxRef}
-              className="absolute right-[6%] sm:right-[11%] top-[16%] sm:top-[18%] w-48 sm:w-64 flex flex-col items-center pointer-events-auto"
+              className="absolute right-[7%] sm:right-[12%] top-[14%] sm:top-[16%] w-48 sm:w-64 flex flex-col items-center pointer-events-auto"
               style={{
-                transform: `translate3d(${npcLungeActive ? '-68px' : npcHitActive ? '26px' : '0px'}, ${
-                  npcLungeActive ? '18px' : '0px'
-                }, -18px) rotateY(-10deg)`,
-                transition: 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1)',
+                transform: `translate3d(${
+                  npcLungeActive ? '-85px' : npcHitActive ? '32px' : '0px'
+                }, ${npcLungeActive ? '20px' : '0px'}, ${npcZ}px) rotateY(${npcRotY}deg) scale(${npcScale})`,
+                transition: 'transform 520ms cubic-bezier(0.22, 1, 0.36, 1)',
               }}
             >
-              {/* Floating Damage Popups for NPC */}
-              {floatingPopups
-                .filter((p) => p.side === 'npc')
-                .map((pop) => (
-                  <div
-                    key={pop.id}
-                    className="absolute -top-14 z-30 px-3 py-1 bg-black/85 border border-white/20 shadow-xl animate-bounce"
-                    style={{ color: pop.color }}
-                  >
-                    <p className="text-lg sm:text-xl font-extrabold font-typewriter tracking-tight">
-                      {pop.text}
-                    </p>
-                    {pop.subtext && (
-                      <p className="text-[10px] uppercase tracking-wider text-stone-300 text-center">
-                        {pop.subtext}
-                      </p>
-                    )}
-                  </div>
-                ))}
-
-              {/* Active Turn Indicator Crown */}
-              {renderedDuel.activeTurn === 'npc' && (
+              {/* Subtle Turn Indicator */}
+              {!isPlayerTurn && (
                 <div className="mb-2 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-widest border border-red-500 text-red-400 bg-black/80">
-                  ◆ Turno do Oponente
+                  ◆ {renderedDuel.npc.name}
                 </div>
               )}
 
               {/* 3D Enemy Standee Card */}
               <div
-                className={`relative w-36 h-36 sm:w-48 sm:h-48 rounded-2xl border-2 overflow-hidden bg-stone-900 flex items-center justify-center transition-all duration-200 ${
-                  npcHitActive ? 'ring-4 ring-red-500 brightness-125' : ''
+                className={`relative w-40 h-40 sm:w-52 sm:h-52 rounded-2xl border-2 overflow-hidden bg-stone-900 flex items-center justify-center transition-all duration-200 ${
+                  npcHitActive ? 'ring-4 ring-red-500 brightness-125 rotate-3' : ''
                 }`}
                 style={{
-                  borderColor:
-                    renderedDuel.activeTurn === 'npc' ? '#ef4444' : renderedDuel.npc.color,
+                  borderColor: !isPlayerTurn ? '#ef4444' : renderedDuel.npc.color,
                   boxShadow: npcHitActive
-                    ? '0 0 38px 10px rgba(239, 68, 68, 0.85), 0 22px 40px rgba(0,0,0,0.85)'
-                    : '0 24px 48px rgba(0,0,0,0.88), 0 0 28px rgba(220, 38, 38, 0.28)',
+                    ? '0 0 44px 12px rgba(239, 68, 68, 0.9), 0 24px 44px rgba(0,0,0,0.88)'
+                    : '0 26px 52px rgba(0,0,0,0.88), 0 0 28px rgba(220, 38, 38, 0.28)',
                 }}
               >
                 {npcImgUrl ? (
@@ -1628,15 +1812,8 @@ export function DuelArena3DOverlay({
                   </span>
                 )}
 
-                {renderedDuel.npc.isDefending && (
-                  <div className="absolute top-2 right-2 px-2 py-0.5 bg-sky-950/90 border border-sky-400 text-sky-200 text-[10px] font-bold flex items-center gap-1">
-                    <Shield className="w-3 h-3" />
-                    Guarda
-                  </div>
-                )}
-
                 {npcHitActive && (
-                  <div className="absolute inset-0 bg-red-600/35 pointer-events-none" />
+                  <div className="absolute inset-0 bg-red-600/40 pointer-events-none" />
                 )}
               </div>
 
@@ -1651,159 +1828,227 @@ export function DuelArena3DOverlay({
                 }}
               />
 
-              {/* Enemy Vital HUD Plate */}
-              <div className="mt-2 w-full bg-stone-950/90 border border-stone-700/80 p-2.5 shadow-2xl">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-xs sm:text-sm font-bold font-typewriter truncate">
+              {/* GM-ONLY Manual Vida (PV) Control Box — Completely invisible to Players & TV! */}
+              {mode === 'gm' && (
+                <div
+                  data-gm-ui="true"
+                  className="mt-2 w-full bg-stone-950/95 border border-stone-700/90 p-2.5 shadow-2xl space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span className="text-xs font-bold font-typewriter truncate">
                       {renderedDuel.npc.name}
-                    </p>
-                    {renderedDuel.npc.subtitle && (
-                      <p className="text-[10px] text-stone-400 truncate">
-                        {renderedDuel.npc.subtitle}
-                      </p>
-                    )}
+                    </span>
+                    <div className="flex items-center gap-1 text-xs font-bold tabular-nums text-red-400">
+                      <input
+                        type="number"
+                        value={renderedDuel.npc.hpCurrent}
+                        onChange={(e) =>
+                          setCombatantHpManual('npc', Number(e.target.value))
+                        }
+                        className="w-12 px-1 py-0.5 text-right bg-stone-900 border border-stone-700 text-red-300"
+                        title="Editar vida atual do oponente diretamente"
+                      />
+                      <span>/</span>
+                      <input
+                        type="number"
+                        value={renderedDuel.npc.hpMax}
+                        onChange={(e) =>
+                          setCombatantHpManual(
+                            'npc',
+                            renderedDuel.npc.hpCurrent,
+                            Number(e.target.value)
+                          )
+                        }
+                        className="w-12 px-1 py-0.5 bg-stone-900 border border-stone-700 text-stone-300"
+                        title="Editar vida máxima do oponente"
+                      />
+                      <span className="text-[10px] text-stone-400">PV</span>
+                    </div>
                   </div>
-                  <span className="text-xs font-bold tabular-nums text-red-400 shrink-0">
-                    {renderedDuel.npc.hpCurrent}/{renderedDuel.npc.hpMax} PV
-                  </span>
-                </div>
 
-                {/* HP Bar */}
-                <div className="mt-1.5 w-full h-2 bg-stone-800 overflow-hidden">
-                  <div
-                    className="h-full bg-red-600 transition-all duration-300"
-                    style={{
-                      width: `${Math.max(
-                        0,
-                        Math.min(
-                          100,
-                          (renderedDuel.npc.hpCurrent / Math.max(1, renderedDuel.npc.hpMax)) * 100
-                        )
-                      )}%`,
-                    }}
-                  />
-                </div>
+                  {/* Visual HP Bar for GM only */}
+                  <div className="w-full h-1.5 bg-stone-800 overflow-hidden">
+                    <div
+                      className="h-full bg-red-600 transition-all duration-200"
+                      style={{
+                        width: `${Math.max(
+                          0,
+                          Math.min(
+                            100,
+                            (renderedDuel.npc.hpCurrent / Math.max(1, renderedDuel.npc.hpMax)) *
+                              100
+                          )
+                        )}%`,
+                      }}
+                    />
+                  </div>
 
-                {/* Quick GM HP Controls */}
-                {mode === 'gm' && (
-                  <div className="mt-2 pt-1.5 border-t border-stone-800 flex items-center justify-between gap-1 text-[10px]">
-                    <span className="text-stone-400">PV Rápido:</span>
+                  {/* Manual Subtract / Add Controls */}
+                  <div className="flex items-center justify-between gap-1 text-[10px]">
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => adjustCombatantHp('npc', -5)}
-                        className="px-1.5 py-0.5 bg-red-950/80 border border-red-800/70 text-red-200 hover:bg-red-900"
+                        onClick={() => adjustCombatantHpSilent('npc', -10)}
+                        className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
+                      >
+                        -10
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => adjustCombatantHpSilent('npc', -5)}
+                        className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
                       >
                         -5
                       </button>
                       <button
                         type="button"
-                        onClick={() => adjustCombatantHp('npc', -1)}
-                        className="px-1.5 py-0.5 bg-red-950/80 border border-red-800/70 text-red-200 hover:bg-red-900"
+                        onClick={() => adjustCombatantHpSilent('npc', -1)}
+                        className="px-1.5 py-0.5 bg-red-950/90 border border-red-800/80 text-red-200 hover:bg-red-900"
                       >
                         -1
                       </button>
                       <button
                         type="button"
-                        onClick={() => adjustCombatantHp('npc', 1)}
-                        className="px-1.5 py-0.5 bg-emerald-950/80 border border-emerald-800/70 text-emerald-200 hover:bg-emerald-900"
+                        onClick={() => adjustCombatantHpSilent('npc', 1)}
+                        className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
                       >
                         +1
                       </button>
                       <button
                         type="button"
-                        onClick={() => adjustCombatantHp('npc', 5)}
-                        className="px-1.5 py-0.5 bg-emerald-950/80 border border-emerald-800/70 text-emerald-200 hover:bg-emerald-900"
+                        onClick={() => adjustCombatantHpSilent('npc', 5)}
+                        className="px-1.5 py-0.5 bg-emerald-950/90 border border-emerald-800/80 text-emerald-200 hover:bg-emerald-900"
                       >
                         +5
                       </button>
                     </div>
+
+                    {/* Custom Exact Value Subtract/Add */}
+                    <div className="flex items-center gap-0.5">
+                      <input
+                        type="number"
+                        min={1}
+                        value={manualNpcDelta}
+                        onChange={(e) => setManualNpcDelta(e.target.value)}
+                        className="w-10 px-1 py-0.5 bg-stone-900 border border-stone-700 text-center text-stone-200 tabular-nums"
+                        title="Valor personalizado de vida"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          adjustCombatantHpSilent(
+                            'npc',
+                            -Math.max(1, Number(manualNpcDelta) || 1)
+                          )
+                        }
+                        className="px-1.5 py-0.5 bg-red-800 hover:bg-red-700 text-white font-bold"
+                        title="Tirar esse valor da vida"
+                      >
+                        -
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          adjustCombatantHpSilent(
+                            'npc',
+                            Math.max(1, Number(manualNpcDelta) || 1)
+                          )
+                        }
+                        className="px-1.5 py-0.5 bg-emerald-800 hover:bg-emerald-700 text-white font-bold"
+                        title="Somar esse valor na vida"
+                      >
+                        +
+                      </button>
+                    </div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* 2. Interactive 2D FX Canvas Overlay (Particles + Fruit Ninja Blade Slash + Shockwaves) */}
+      {/* 2. Interactive 2D FX Canvas Overlay (Particles + Corte Slash + Impacto/Tiro/Magia Shockwaves) */}
       <canvas
         ref={fxCanvasRef}
         className="absolute inset-0 w-full h-full pointer-events-none z-20"
       />
 
-      {/* 3. Top Duel Status & GM Interactive Cursor Toolbar */}
-      <header className="relative z-30 px-4 py-2.5 bg-stone-950/90 border-b border-stone-800 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <span
-            className="px-2.5 py-1 text-xs font-bold font-typewriter uppercase tracking-wider border"
-            style={{ borderColor: preset.accentColor, color: preset.accentColor }}
-          >
-            Rodada {renderedDuel.round}
-          </span>
-          <div className="min-w-0">
-            <p className="text-xs sm:text-sm font-bold font-typewriter truncate">
-              {renderedDuel.player.name}{' '}
-              <span className="text-stone-500 font-normal">vs</span> {renderedDuel.npc.name}
-            </p>
+      {/* 3. GM-ONLY Top Control Bar (Players & TV have 100% pure unobstructed 3D Arena view!) */}
+      {mode === 'gm' && onUpdateDuel && (
+        <header
+          data-gm-ui="true"
+          className="relative z-30 px-4 py-2 bg-stone-950/92 border-b border-stone-800 flex flex-wrap items-center justify-between gap-2"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span
+              className="px-2 py-0.5 text-xs font-bold font-typewriter uppercase tracking-wider border"
+              style={{ borderColor: preset.accentColor, color: preset.accentColor }}
+            >
+              Turno: {isPlayerTurn ? renderedDuel.player.name : renderedDuel.npc.name}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const nextTurn = isPlayerTurn ? 'npc' : 'player';
+                const nextRound = nextTurn === 'player' ? renderedDuel.round + 1 : renderedDuel.round;
+                onUpdateDuel({
+                  ...renderedDuel,
+                  activeTurn: nextTurn,
+                  round: nextRound,
+                  lastActionSummary: `Turno de ${
+                    nextTurn === 'player' ? renderedDuel.player.name : renderedDuel.npc.name
+                  }`,
+                });
+              }}
+              className="px-3 py-1 text-xs font-bold bg-amber-600 hover:bg-amber-500 text-stone-950"
+              title="Alterna o turno e gira a perspectiva 3D da câmera"
+            >
+              Alternar Turno / Perspectiva ➔
+            </button>
             {renderedDuel.lastActionSummary && (
-              <p className="text-[11px] text-amber-300/90 truncate">
+              <span className="text-[11px] text-stone-400 truncate hidden xl:inline">
                 {renderedDuel.lastActionSummary}
-              </p>
+              </span>
             )}
           </div>
-        </div>
 
-        {/* GM Interactive Cursor FX & Camera Controls */}
-        {mode === 'gm' && onUpdateDuel && (
+          {/* Broad, Universal Mouse Attack Effect Types (Corte, Impacto, Tiro, Magia) */}
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            {/* Cursor FX Mode Selector ("Fruit Ninja" Blade, Blunt Smash, Shot, Arcane) */}
             <div className="flex items-center bg-stone-900 border border-stone-700 p-0.5">
+              <span className="px-2 text-[10px] uppercase tracking-wider text-stone-400 hidden sm:inline">
+                Ataque Mouse:
+              </span>
               {(
                 [
-                  ['blade', 'Lâmina (Fruit Ninja)', Swords],
-                  ['blunt', 'Porrada', Hammer],
-                  ['shot', 'Disparo', Crosshair],
-                  ['arcane', 'Ritual', Sparkles],
+                  ['blade', 'Corte', Swords],
+                  ['blunt', 'Impacto', Hammer],
+                  ['shot', 'Tiro', Crosshair],
+                  ['arcane', 'Magia', Sparkles],
                 ] as const
               ).map(([id, label, Icon]) => (
                 <button
                   key={id}
                   type="button"
                   onClick={() => setCursorMode(id)}
-                  className={`px-2 py-1 text-[11px] flex items-center gap-1 transition-colors ${
+                  className={`px-2.5 py-1 text-[11px] flex items-center gap-1 transition-colors ${
                     cursorMode === id
                       ? 'bg-red-700 text-white font-semibold'
                       : 'text-stone-300 hover:bg-stone-800'
                   }`}
                   title={
                     id === 'blade'
-                      ? 'Arraste o mouse cortando o Player ou NPC como uma lâmina (Fruit Ninja)'
-                      : `Clique no Player ou NPC para aplicar ${label}`
+                      ? 'Corte: arraste o mouse sobre o personagem para fatiar'
+                      : `${label}: clique sobre o personagem para disparar o efeito`
                   }
                 >
                   <Icon className="w-3 h-3" />
-                  <span className="hidden md:inline">{label.split(' ')[0]}</span>
+                  <span>{label}</span>
                 </button>
               ))}
-
-              {/* Damage per cursor strike */}
-              <select
-                value={cursorDamage}
-                onChange={(e) => setCursorDamage(Number(e.target.value))}
-                className="ml-1 px-1.5 py-1 text-[11px] bg-stone-950 border-l border-stone-700 text-amber-300 font-semibold"
-                title="Dano descontado ao cortar/bater com o cursor"
-              >
-                <option value={0}>Só Efeito (0 PV)</option>
-                <option value={2}>-2 PV / golpe</option>
-                <option value={5}>-5 PV / golpe</option>
-                <option value={10}>-10 PV / golpe</option>
-                <option value={15}>-15 PV / golpe</option>
-              </select>
             </div>
 
-            {/* 3D Camera Angle Switcher */}
+            {/* 3D Camera Perspective Selector */}
             <select
               value={renderedDuel.cameraAngle}
               onChange={(e) =>
@@ -1813,33 +2058,122 @@ export function DuelArena3DOverlay({
                 })
               }
               className="px-2 py-1 text-[11px] bg-stone-900 border border-stone-700 text-stone-200"
-              title="Ângulo da Câmera 3D"
+              title="Perspectiva 3D da Câmera"
             >
-              <option value="dynamic">Câmera 3D: Dinâmica (Turno)</option>
-              <option value="stadium">Câmera 3D: Coliseu (Pokémon)</option>
-              <option value="showdown">Câmera 3D: Confronto Lateral</option>
-              <option value="focus_player">Câmera 3D: Foco Player</option>
-              <option value="focus_npc">Câmera 3D: Foco Oponente</option>
+              <option value="dynamic">Perspectiva: Dinâmica (Segue Turno)</option>
+              <option value="stadium">Perspectiva: Arena Diagonal</option>
+              <option value="showdown">Perspectiva: Frontal</option>
+              <option value="focus_player">Perspectiva: Foco {renderedDuel.player.name}</option>
+              <option value="focus_npc">Perspectiva: Foco {renderedDuel.npc.name}</option>
             </select>
 
-            {/* 3D Arena Preset Switcher */}
-            <select
-              value={renderedDuel.arenaPreset}
-              onChange={(e) =>
-                onUpdateDuel({
-                  ...renderedDuel,
-                  arenaPreset: e.target.value as DuelArenaPresetId,
-                })
-              }
-              className="px-2 py-1 text-[11px] bg-stone-900 border border-stone-700 text-stone-200"
-              title="Estilo da Arena 3D"
-            >
-              {DUEL_ARENA_PRESETS.map((p) => (
-                <option key={p.id} value={p.id}>
-                  Arena: {p.name}
-                </option>
-              ))}
-            </select>
+            {/* Direct Color & Particle Preset Selector + Custom Preset Creator */}
+            <div className="relative flex items-center">
+              <select
+                value={renderedDuel.arenaPreset}
+                onChange={(e) => {
+                  const nextId = e.target.value as DuelArenaPresetId;
+                  const savedCustom =
+                    loadCustomDuelPresets().find((p) => p.id === nextId) || null;
+                  onUpdateDuel({
+                    ...renderedDuel,
+                    arenaPreset: nextId,
+                    customArenaStyle: savedCustom,
+                  });
+                }}
+                className="px-2 py-1 text-[11px] bg-stone-900 border border-stone-700 text-stone-200"
+                title="Cor de fundo e partículas"
+              >
+                {allPresets.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setShowArenaCustomizer((v) => !v)}
+                className="px-2 py-1 text-[11px] bg-stone-900 border border-l-0 border-stone-700 hover:bg-stone-800 text-amber-400 flex items-center gap-1"
+                title="Criar preset customizado de cores e partículas"
+              >
+                <Palette className="w-3.5 h-3.5" />
+                <span className="hidden lg:inline">+ Preset</span>
+              </button>
+
+              {showArenaCustomizer && (
+                <div className="absolute right-0 top-9 w-72 bg-stone-950 border border-stone-700 p-3 shadow-2xl space-y-2.5 z-50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold font-typewriter">
+                      Criar Preset de Fundo & Partículas
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowArenaCustomizer(false)}
+                      className="text-stone-400 hover:text-white"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <input
+                    type="text"
+                    value={liveCustomName}
+                    onChange={(e) => setLiveCustomName(e.target.value)}
+                    placeholder="Nome (ex: Cinza · Faíscas)"
+                    className="w-full px-2 py-1 bg-stone-900 border border-stone-700 text-xs"
+                  />
+                  <label className="block space-y-1">
+                    <span className="text-[11px] text-stone-400">Partículas</span>
+                    <select
+                      value={liveParticleKind}
+                      onChange={(e) => setLiveParticleKind(e.target.value as DuelParticleKind)}
+                      className="w-full px-2 py-1 bg-stone-900 border border-stone-700 text-xs"
+                    >
+                      {DUEL_PARTICLE_OPTIONS.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="grid grid-cols-3 gap-2 text-[10px]">
+                    <label className="space-y-1">
+                      <span className="text-stone-400 block">Fundo</span>
+                      <input
+                        type="color"
+                        value={liveBgColor}
+                        onChange={(e) => setLiveBgColor(e.target.value)}
+                        className="w-full h-7 bg-transparent border border-stone-700 cursor-pointer"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-stone-400 block">Chão</span>
+                      <input
+                        type="color"
+                        value={liveFloorColor}
+                        onChange={(e) => setLiveFloorColor(e.target.value)}
+                        className="w-full h-7 bg-transparent border border-stone-700 cursor-pointer"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-stone-400 block">Partículas</span>
+                      <input
+                        type="color"
+                        value={liveAccentColor}
+                        onChange={(e) => setLiveAccentColor(e.target.value)}
+                        className="w-full h-7 bg-transparent border border-stone-700 cursor-pointer"
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSaveLiveCustomPreset}
+                    className="w-full py-1.5 text-xs font-bold bg-amber-600 hover:bg-amber-500 text-stone-950"
+                  >
+                    Salvar e Aplicar
+                  </button>
+                </div>
+              )}
+            </div>
 
             {/* Quick Upload 3D Background Image/Video */}
             {uploadContext && (
@@ -1862,7 +2196,7 @@ export function DuelArena3DOverlay({
               </label>
             )}
 
-            {/* Toggle Hide Player Actions on Shared TV Screen */}
+            {/* Toggle Player Attack Menu Visibility (Default: Disabled / Hidden) */}
             <button
               type="button"
               onClick={() =>
@@ -1873,43 +2207,30 @@ export function DuelArena3DOverlay({
               }
               className={`px-2 py-1 text-[11px] border flex items-center gap-1 ${
                 renderedDuel.hidePlayerActionsOnScreen
-                  ? 'bg-amber-950/80 border-amber-600 text-amber-200'
-                  : 'bg-stone-900 border-stone-700 text-stone-300'
+                  ? 'bg-stone-900 border-stone-700 text-stone-300'
+                  : 'bg-emerald-950/80 border-emerald-600 text-emerald-200'
               }`}
-              title="Ocultar ou mostrar as opções de ação do Player na Tela Compartilhada (TV)"
+              title="Por padrão os jogadores só veem a arena 3D e os tokens. Clique se quiser mostrar os ataques para o jogador no celular."
             >
               {renderedDuel.hidePlayerActionsOnScreen ? (
                 <>
                   <EyeOff className="w-3.5 h-3.5" />
-                  <span className="hidden lg:inline">HUD TV Oculto</span>
+                  <span className="hidden lg:inline">Tela Limpa (Só Arena)</span>
                 </>
               ) : (
                 <>
                   <Eye className="w-3.5 h-3.5" />
-                  <span className="hidden lg:inline">HUD TV Visível</span>
+                  <span className="hidden lg:inline">Ataques Player Visíveis</span>
                 </>
               )}
             </button>
 
-            {/* Next Turn Button */}
             <button
               type="button"
-              onClick={() => {
-                const nextTurn = renderedDuel.activeTurn === 'player' ? 'npc' : 'player';
-                const nextRound =
-                  nextTurn === 'player' ? renderedDuel.round + 1 : renderedDuel.round;
-                onUpdateDuel({
-                  ...renderedDuel,
-                  activeTurn: nextTurn,
-                  round: nextRound,
-                  lastActionSummary: `Turno de ${
-                    nextTurn === 'player' ? renderedDuel.player.name : renderedDuel.npc.name
-                  }`,
-                });
-              }}
-              className="px-2.5 py-1 text-[11px] font-semibold bg-amber-600 hover:bg-amber-500 text-stone-950"
+              onClick={() => setHudCollapsed((v) => !v)}
+              className="px-2 py-1 text-[11px] bg-stone-900 border border-stone-700 text-stone-300 hover:text-white"
             >
-              Passar Turno ➔
+              {hudCollapsed ? '▴ Fichas/Dados' : '▾ Ocultar Aba'}
             </button>
 
             {/* End Duel Button */}
@@ -1919,40 +2240,18 @@ export function DuelArena3DOverlay({
               className="px-2.5 py-1 text-[11px] font-semibold bg-stone-800 hover:bg-red-900 border border-stone-600 text-stone-100 flex items-center gap-1"
             >
               <X className="w-3.5 h-3.5" />
-              Encerrar Duelo
+              Encerrar
             </button>
           </div>
-        )}
-      </header>
-
-      {/* Subtle GM Helper Tip for Cursor Slash */}
-      {mode === 'gm' && (
-        <div className="relative z-30 px-4 py-1 bg-black/60 border-b border-stone-800/60 flex items-center justify-between text-[11px] text-stone-300">
-          <span>
-            {cursorMode === 'blade'
-              ? '💡 Modo Lâmina ativo: passe o mouse cortando o Player ou o NPC como em Fruit Ninja para fatiar e aplicar dano ao vivo!'
-              : `💡 Modo ${
-                  cursorMode === 'blunt'
-                    ? 'Porrada'
-                    : cursorMode === 'shot'
-                      ? 'Disparo'
-                      : 'Ritual'
-                } ativo: clique diretamente sobre o Player ou NPC para disparar o impacto!`}
-          </span>
-          <button
-            type="button"
-            onClick={() => setHudCollapsed((v) => !v)}
-            className="text-stone-400 hover:text-white underline ml-2 shrink-0"
-          >
-            {hudCollapsed ? '▴ Mostrar Comandos de Combate' : '▾ Recolher Comandos'}
-          </button>
-        </div>
+        </header>
       )}
 
-      {/* 4. Bottom Turn-Based Command Dock (Persona / Expedition 33 / Pokémon Style) */}
+      {/* 4. Bottom Turn-Based Roll Dock (Visible to GM; hidden by default for Players/TV) */}
       {showBottomCommandDock && !hudCollapsed && (
-        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 w-[min(940px,95vw)] bg-stone-950/95 border border-stone-700/90 shadow-2xl">
-          {/* Dock Header: Combatant Action Tabs (GM sees both Player & Secret NPC actions; Players/TV NEVER see NPC actions!) */}
+        <div
+          data-gm-ui="true"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 w-[min(920px,95vw)] bg-stone-950/95 border border-stone-700/90 shadow-2xl"
+        >
           <div className="px-4 py-2 border-b border-stone-800 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               {mode === 'gm' ? (
@@ -1966,7 +2265,7 @@ export function DuelArena3DOverlay({
                         : 'bg-stone-900 border-stone-700 text-stone-300'
                     }`}
                   >
-                    ⚔️ Ações de {renderedDuel.player.name} ({renderedDuel.player.actions.length})
+                    Rolagens de {renderedDuel.player.name} ({renderedDuel.player.actions.length})
                   </button>
                   <button
                     type="button"
@@ -1978,7 +2277,7 @@ export function DuelArena3DOverlay({
                     }`}
                   >
                     <Lock className="w-3 h-3 text-red-400" />
-                    Golpes Secretos de {renderedDuel.npc.name} (Só Mestre ·{' '}
+                    Rolagens de {renderedDuel.npc.name} (Só Mestre ·{' '}
                     {renderedDuel.npc.actions.length})
                   </button>
                 </>
@@ -1986,21 +2285,26 @@ export function DuelArena3DOverlay({
                 <div className="flex items-center gap-2">
                   <Swords className="w-4 h-4 text-emerald-400" />
                   <span className="text-xs font-bold font-typewriter uppercase tracking-wider">
-                    Comandos de Combate · {renderedDuel.player.name}
+                    Ações de {renderedDuel.player.name}
                   </span>
                 </div>
               )}
             </div>
 
             {mode === 'gm' && (
-              <button
-                type="button"
-                onClick={() => setShowAddCustomMove((v) => !v)}
-                className="px-2.5 py-1 text-[11px] border border-stone-700 bg-stone-900 hover:bg-stone-800 flex items-center gap-1"
-              >
-                <Plus className="w-3 h-3 text-amber-400" />
-                {showAddCustomMove ? 'Fechar' : '+ Adicionar Golpe / Ação'}
-              </button>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-stone-400 hidden md:inline">
+                  Rolar dados aqui apenas testa o acerto/dano. Use o mouse no personagem para a animação de ataque!
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowAddCustomMove((v) => !v)}
+                  className="px-2.5 py-1 text-[11px] border border-stone-700 bg-stone-900 hover:bg-stone-800 flex items-center gap-1"
+                >
+                  <Plus className="w-3 h-3 text-amber-400" />
+                  {showAddCustomMove ? 'Fechar' : '+ Ação'}
+                </button>
+              </div>
             )}
           </div>
 
@@ -2015,21 +2319,21 @@ export function DuelArena3DOverlay({
                 required
                 value={customMoveName}
                 onChange={(e) => setCustomMoveName(e.target.value)}
-                placeholder="Nome do golpe (ex: Garras Sombrias)"
+                placeholder="Nome da ação"
                 className="px-2.5 py-1.5 bg-stone-950 border border-stone-700 text-stone-100"
               />
               <input
                 type="text"
                 value={customMoveFormula}
                 onChange={(e) => setCustomMoveFormula(e.target.value)}
-                placeholder="Fórmula de ataque (ex: 2d20kh1+6)"
+                placeholder="Fórmula de teste (ex: 1d20+5)"
                 className="px-2.5 py-1.5 bg-stone-950 border border-stone-700 text-stone-100 font-mono"
               />
               <input
                 type="text"
                 value={customMoveDamage}
                 onChange={(e) => setCustomMoveDamage(e.target.value)}
-                placeholder="Fórmula de dano (ex: 2d8+4)"
+                placeholder="Fórmula secundária (ex: 1d8+3)"
                 className="px-2.5 py-1.5 bg-stone-950 border border-stone-700 text-stone-100 font-mono"
               />
               <button
@@ -2044,83 +2348,66 @@ export function DuelArena3DOverlay({
             </form>
           )}
 
-          {/* Action Cards Grid (Extracted from Sheet / PDF) */}
-          <div className="p-3 max-h-44 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+          {/* Action Cards Grid (Rolling dice ONLY checks the roll — does NOT trigger hit animation) */}
+          <div className="p-2.5 max-h-36 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
             {(mode === 'gm' && activeActionSideTab === 'npc'
               ? renderedDuel.npc.actions
               : renderedDuel.player.actions
             ).map((act) => {
               const activeSide: 'player' | 'npc' =
                 mode === 'gm' ? activeActionSideTab : 'player';
-              const canTrigger = mode === 'gm' || mode === 'player';
 
               return (
                 <div
                   key={act.id}
-                  className="border border-stone-800 bg-stone-900/90 hover:border-stone-600 p-2.5 flex flex-col justify-between gap-2 transition-colors"
+                  className="border border-stone-800 bg-stone-900/90 hover:border-stone-600 p-2 flex items-center justify-between gap-2 transition-colors"
                 >
-                  <div>
-                    <div className="flex items-center justify-between gap-1.5">
-                      <span className="text-xs font-bold font-typewriter text-stone-100 truncate">
-                        {act.label}
-                      </span>
-                      {act.sourceLabel && (
-                        <span className="px-1.5 py-0.5 text-[9px] uppercase tracking-wider bg-stone-800 text-stone-300 shrink-0">
-                          {act.sourceLabel}
-                        </span>
-                      )}
-                    </div>
-                    {act.description && (
-                      <p className="text-[10px] text-stone-400 truncate mt-0.5">
-                        {act.description}
-                      </p>
-                    )}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold font-typewriter text-stone-100 truncate">
+                      {act.label}
+                    </p>
+                    <p className="text-[10px] text-stone-400 font-mono truncate">
+                      {act.formula}
+                      {act.damageFormula ? ` · ${act.damageFormula}` : ''}
+                    </p>
                   </div>
 
-                  <div className="flex items-center gap-1.5 pt-1">
-                    {canTrigger ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            onExecuteDuelAction?.({
-                              side: activeSide,
-                              action: act,
-                              rollDamageOnly: false,
-                            })
-                          }
-                          className={`flex-1 py-1.5 px-2 text-[11px] font-bold flex items-center justify-center gap-1 ${
-                            activeSide === 'npc'
-                              ? 'bg-red-800 hover:bg-red-700 text-white'
-                              : 'bg-amber-600 hover:bg-amber-500 text-stone-950'
-                          }`}
-                        >
-                          <Dices className="w-3.5 h-3.5" />
-                          <span>Usar ({act.formula})</span>
-                        </button>
-                        {act.damageFormula && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onExecuteDuelAction?.({
-                                side: activeSide,
-                                action: act,
-                                rollDamageOnly: true,
-                              })
-                            }
-                            className="py-1.5 px-2 text-[11px] font-semibold bg-stone-800 hover:bg-red-950 border border-stone-700 text-red-300 flex items-center gap-1 shrink-0"
-                            title={`Rolar e aplicar ${act.damageLabel || 'Dano'}: ${act.damageFormula}`}
-                          >
-                            <Flame className="w-3 h-3" />
-                            <span>{act.damageLabel || 'Dano'}</span>
-                          </button>
-                        )}
-                      </>
-                    ) : (
-                      <span className="text-[10px] font-mono text-stone-400">
-                        {act.formula}
-                        {act.damageFormula ? ` · Dano: ${act.damageFormula}` : ''}
-                      </span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onExecuteDuelAction?.({
+                          side: activeSide,
+                          action: act,
+                          rollDamageOnly: false,
+                        })
+                      }
+                      className={`py-1 px-2 text-[11px] font-bold flex items-center gap-1 ${
+                        activeSide === 'npc'
+                          ? 'bg-red-800 hover:bg-red-700 text-white'
+                          : 'bg-amber-600 hover:bg-amber-500 text-stone-950'
+                      }`}
+                      title={`Rolar teste (${act.formula})`}
+                    >
+                      <Dices className="w-3 h-3" />
+                      <span>Rolar</span>
+                    </button>
+                    {act.damageFormula && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onExecuteDuelAction?.({
+                            side: activeSide,
+                            action: act,
+                            rollDamageOnly: true,
+                          })
+                        }
+                        className="py-1 px-2 text-[11px] font-semibold bg-stone-800 hover:bg-stone-700 border border-stone-700 text-stone-200 flex items-center gap-1"
+                        title={`Rolar ${act.damageFormula}`}
+                      >
+                        <Flame className="w-3 h-3 text-amber-400" />
+                        <span>Dano</span>
+                      </button>
                     )}
                   </div>
                 </div>
