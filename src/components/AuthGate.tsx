@@ -1,6 +1,6 @@
 import { useState } from 'react';
+import { BookOpen, Dices, Eye, Layers, Smartphone, Tv, Volume2 } from 'lucide-react';
 import { signInWithGoogle } from '../lib/firebase';
-import { STARTER_ASSETS } from '../lib/templates';
 
 interface AuthGateProps {
   subtitle?: string;
@@ -45,15 +45,15 @@ export function AuthGate({ subtitle }: AuthGateProps) {
         </button>
       </header>
 
-      <main className="flex-1 w-full max-w-6xl mx-auto px-6 py-12 lg:py-16 grid grid-cols-1 lg:grid-cols-12 gap-10 items-stretch">
-        <section className="lg:col-span-6 flex flex-col justify-center space-y-6">
+      <main className="flex-1 w-full max-w-6xl mx-auto px-6 py-12 lg:py-16 grid grid-cols-1 lg:grid-cols-12 gap-10 items-center">
+        <section className="lg:col-span-7 flex flex-col justify-center space-y-6">
           <p className="text-xs vtt-muted">Virtual Tabletop · Presencial e Online</p>
           <h1 className="text-3xl sm:text-4xl lg:text-[2.75rem] font-bold font-typewriter leading-tight">
             Sua mesa de RPG limpa, rápida e sem atrito.
           </h1>
           <p className="text-sm sm:text-base vtt-muted leading-relaxed max-w-xl">
             {subtitle ||
-              'Troque cenas completas com música e névoa em um clique, projete pistas na TV sem menus do mestre e deixe cada jogador rolar dados pela própria ficha modular ou PDF no celular.'}
+              'Troque cenas completas com música, névoa e muros de visão em um clique, projete pistas na TV sem menus do mestre e deixe cada jogador rolar dados pela própria ficha modular ou PDF no celular.'}
           </p>
 
           <div className="pt-2 space-y-3">
@@ -67,49 +67,81 @@ export function AuthGate({ subtitle }: AuthGateProps) {
             </button>
             {error && <p className="text-xs text-red-700 dark:text-red-400">{error}</p>}
             <p className="text-xs vtt-muted">
-              Suas campanhas, temas visuais, fichas e notas ficam salvos na nuvem.
+              Suas campanhas, temas visuais, fichas, áudios e notas ficam salvos na nuvem.
             </p>
-          </div>
-
-          <div className="pt-6 border-t vtt-border grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
-            <div>
-              <p className="font-semibold">Cenas</p>
-              <p className="vtt-muted mt-0.5">Pré-carregadas</p>
-            </div>
-            <div>
-              <p className="font-semibold">Segunda Tela</p>
-              <p className="vtt-muted mt-0.5">Névoa 100% opaca</p>
-            </div>
-            <div>
-              <p className="font-semibold">Fichas</p>
-              <p className="vtt-muted mt-0.5">Blocos ou PDF</p>
-            </div>
-            <div>
-              <p className="font-semibold">Áudio</p>
-              <p className="vtt-muted mt-0.5">3 camadas ao vivo</p>
-            </div>
           </div>
         </section>
 
-        <section className="lg:col-span-6 flex">
-          <div className="w-full vtt-surface border p-3 flex flex-col justify-between">
-            <div className="relative flex-1 min-h-[300px] overflow-hidden bg-stone-900">
-              <img
-                src={STARTER_ASSETS.tavernScene}
-                alt="Cena de taverna costeira ao entardecer no Folio VTT"
-                referrerPolicy="no-referrer"
-                className="w-full h-full object-cover"
-              />
-              <div className="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/85 via-black/45 to-transparent text-stone-100">
-                <p className="text-xs opacity-80">Cena ativa · A Âncora Enferrujada</p>
-                <p className="text-sm font-typewriter mt-0.5">
-                  Fundo, névoa, tokens e ambiente trocam juntos com 1 clique.
+        {/* Pure Typographic "Papel e Tinta" Dossier Summary (Zero AI imagery) */}
+        <section className="lg:col-span-5">
+          <div className="vtt-surface border vtt-border p-6 space-y-5">
+            <div className="flex items-center justify-between border-b vtt-border pb-3">
+              <div>
+                <p className="text-[11px] uppercase tracking-widest vtt-muted">Dossiê da Mesa</p>
+                <p className="text-base font-bold font-typewriter mt-0.5">
+                  Tudo o que você controla ao vivo
                 </p>
               </div>
+              <span className="text-[11px] font-mono vtt-muted">v1 · Folio</span>
             </div>
-            <div className="pt-3 px-1 flex items-center justify-between text-xs vtt-muted">
-              <span>Tema padrão · Papel e Tinta</span>
-              <span>Customizável por campanha</span>
+
+            <ul className="space-y-3.5 text-xs">
+              <li className="flex items-start gap-3">
+                <Layers className="w-4 h-4 vtt-accent-text shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold">Cenas, Vídeos, Névoa e Muros de Visão</p>
+                  <p className="vtt-muted mt-0.5 leading-relaxed">
+                    Alterne mapas táticos, fundos animados, névoa de guerra e linha de visão dinâmica com portas.
+                  </p>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <Tv className="w-4 h-4 vtt-accent-text shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold">Segunda Tela limpa para TV ou monitor</p>
+                  <p className="vtt-muted mt-0.5 leading-relaxed">
+                    Janela sem barras do mestre, névoa 100% opaca, efeitos visuais sincronizados e handouts em tela cheia.
+                  </p>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <Smartphone className="w-4 h-4 vtt-accent-text shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold">Fichas Livres + Leitor Automático de PDF</p>
+                  <p className="vtt-muted mt-0.5 leading-relaxed">
+                    Qualquer sistema de RPG: importe um PDF para gerar blocos e rolagens ou monte do zero no celular.
+                  </p>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <Dices className="w-4 h-4 vtt-accent-text shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold">Rolador Universal + Chat Público e Oculto</p>
+                  <p className="vtt-muted mt-0.5 leading-relaxed">
+                    Dados explosivos, vantagem, pools de sucesso e rolagens secretas exclusivas do mestre.
+                  </p>
+                </div>
+              </li>
+              <li className="flex items-start gap-3">
+                <Volume2 className="w-4 h-4 vtt-accent-text shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold">Mixer de 3 Camadas + Wiki da Campanha</p>
+                  <p className="vtt-muted mt-0.5 leading-relaxed">
+                    Música, ambiente e SFX com pitch/abafamento e pastas organizadas com segredos isolados.
+                  </p>
+                </div>
+              </li>
+            </ul>
+
+            <div className="pt-3 border-t vtt-border flex items-center justify-between text-[11px] vtt-muted">
+              <span className="flex items-center gap-1.5">
+                <Eye className="w-3.5 h-3.5" />
+                Tema Papel e Tinta
+              </span>
+              <span className="flex items-center gap-1.5">
+                <BookOpen className="w-3.5 h-3.5" />
+                Customizável por campanha
+              </span>
             </div>
           </div>
         </section>

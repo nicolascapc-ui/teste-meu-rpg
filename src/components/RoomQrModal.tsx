@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { Check, Copy, ExternalLink, Smartphone, Tv, Users, X } from 'lucide-react';
 import type { Campaign, CampaignMember } from '../types/vtt';
+import { buildAppUrl } from '../lib/router';
 
 interface RoomQrModalProps {
   campaign: Campaign;
@@ -13,9 +14,8 @@ export function RoomQrModal({ campaign, members, onClose }: RoomQrModalProps) {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [copied, setCopied] = useState(false);
 
-  const origin = window.location.origin;
-  const joinUrl = `${origin}/join/${campaign.roomCode}`;
-  const secondScreenUrl = `${origin}/screen/${campaign.id}`;
+  const joinUrl = buildAppUrl(`/join/${campaign.roomCode}`);
+  const secondScreenUrl = buildAppUrl(`/screen/${campaign.id}`);
 
   useEffect(() => {
     void QRCode.toDataURL(joinUrl, {

@@ -21,6 +21,7 @@ import {
   uploadMediaFile,
   type CampaignUploadContext,
 } from '../lib/mediaStore';
+import { parseSheetPdfInBrowser } from '../lib/clientPdfParser';
 
 export interface CreateSheetPayload {
   name: string;
@@ -48,26 +49,6 @@ interface CharacterSheetPanelProps {
     blocks: SheetBlock[];
   }) => Promise<void>;
   onNotify: (msg: string) => void;
-}
-
-interface ParsedPdfSheetResponse {
-  systemName: string;
-  characterName: string;
-  subtitle: string;
-  blocks: SheetBlock[];
-}
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      const idx = result.indexOf(',');
-      resolve(idx >= 0 ? result.slice(idx + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error || new Error('Falha ao ler arquivo PDF.'));
-    reader.readAsDataURL(file);
-  });
 }
 
 export function CharacterSheetPanel({
@@ -205,31 +186,12 @@ export function CharacterSheetPanel({
     }
 
     setImportingPdf(true);
-    setImportStatus('Enviando PDF para a nuvem da campanha...');
+    setImportStatus('Lendo PDF e salvando na nuvem da campanha...');
     try {
-      const uploadRes = await uploadMediaFile(file, uploadContext);
-
-      setImportStatus('Lendo o PDF e montando a ficha interativa...');
-      const pdfBase64 = await fileToBase64(file);
-
-      const apiRes = await fetch('/api/parse-sheet-pdf', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fileName: file.name,
-          pdfBase64,
-        }),
-      });
-
-      if (!apiRes.ok) {
-        const errBody = (await apiRes.json().catch(() => ({}))) as { error?: string };
-        throw new Error(
-          errBody.error ||
-            'Não foi possível ler automaticamente o PDF. Ele foi anexado como PDF puro.'
-        );
-      }
-
-      const parsed = (await apiRes.json()) as ParsedPdfSheetResponse;
+      const [uploadRes, parsed] = await Promise.all([
+        uploadMediaFile(file, uploadContext),
+        parseSheetPdfInBrowser(file),
+      ]);
 
       const id = await onCreateSheet({
         name: parsed.characterName || file.name.replace(/\.pdf$/i, ''),
@@ -351,16 +313,12 @@ export function CharacterSheetPanel({
     if (!file || !activeSheet) return;
     setUploadingPdf(true);
     try {
-      const res = await uploadMediaFile(file, uploadContext);
       if (autoBuildBlocks) {
-        const pdfBase64 = await fileToBase64(file);
-        const apiRes = await fetch('/api/parse-sheet-pdf', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fileName: file.name, pdfBase64 }),
-        });
-        if (apiRes.ok) {
-          const parsed = (await apiRes.json()) as ParsedPdfSheetResponse;
+        const [res, parsed] = await Promise.all([
+          uploadMediaFile(file, uploadContext),
+          parseSheetPdfInBrowser(file).catch(() => null),
+        ]);
+        if (parsed) {
           await onUpdateSheet({
             ...activeSheet,
             name: parsed.characterName || activeSheet.name,
@@ -375,8 +333,18 @@ export function CharacterSheetPanel({
           onNotify(`PDF lido e ficha montada (${parsed.systemName})!`);
           return;
         }
+        await onUpdateSheet({
+          ...activeSheet,
+          mode: 'pdf',
+          pdfMediaId: res.mediaId,
+          pdfUrl: res.url,
+          pdfFileName: res.fileName,
+        });
+        onNotify(`PDF anexado: ${res.fileName}`);
+        return;
       }
 
+      const res = await uploadMediaFile(file, uploadContext);
       await onUpdateSheet({
         ...activeSheet,
         mode: 'pdf',

@@ -23,6 +23,7 @@ import {
 } from '../types/vtt';
 import { audioEngine, type LayerTimingInfo } from '../lib/audioEngine';
 import { uploadMediaFile, type CampaignUploadContext } from '../lib/mediaStore';
+import { resolveMediaLinkInBrowser } from '../lib/clientMediaLinkResolver';
 
 interface AudioMixerPanelProps {
   uploadContext: CampaignUploadContext;
@@ -192,21 +193,7 @@ export function AudioMixerPanel({
     if (!urlLink.trim()) return;
     setResolvingLink(true);
     try {
-      const res = await fetch('/api/resolve-media-link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: urlLink.trim() }),
-      });
-      const data = (await res.json()) as {
-        error?: string;
-        sourceType?: 'youtube' | 'url';
-        url?: string;
-        title?: string;
-      };
-      if (!res.ok || !data.url) {
-        throw new Error(data.error || 'Link de áudio/vídeo inválido.');
-      }
-
+      const data = await resolveMediaLinkInBrowser(urlLink.trim());
       const finalName = (urlName.trim() || data.title || 'Faixa por Link').slice(0, 96);
       await onAddTrack({
         name: finalName,

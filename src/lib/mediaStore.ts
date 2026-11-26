@@ -123,9 +123,13 @@ function generateMediaId(): string {
   return `cld_${rand}`;
 }
 
+// On static hosting (GitHub Pages), /api/media does not exist; remember this after first miss so uploads are instant
+let relayAvailable: boolean | null = null;
+
 async function uploadToSessionRelay(file: File): Promise<string> {
+  if (relayAvailable === false) return '';
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 6000);
+  const timer = window.setTimeout(() => controller.abort(), 1800);
   try {
     const res = await fetch('/api/media', {
       method: 'POST',
@@ -136,12 +140,17 @@ async function uploadToSessionRelay(file: File): Promise<string> {
       body: file,
       signal: controller.signal,
     });
-    if (res.ok) {
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
+      relayAvailable = true;
       const json = (await res.json()) as { url?: string };
       return json.url || '';
     }
-  } catch (err) {
-    console.warn('Session media relay skipped:', err);
+    if (res.status === 404 || res.status === 405 || !contentType.includes('application/json')) {
+      relayAvailable = false;
+    }
+  } catch {
+    relayAvailable = false;
   } finally {
     window.clearTimeout(timer);
   }
@@ -396,7 +405,13 @@ async function fetchFromCampaignCloud(campaignId: string, mediaId: string): Prom
 function sanitizeFallbackUrl(url?: string): string {
   const trimmed = (url || '').trim();
   if (!trimmed) return '';
-  if (trimmed.startsWith('/') || trimmed.startsWith('blob:')) return trimmed;
+  // Normalize root-absolute starter assets so they resolve cleanly on GitHub Pages subpaths (/repo/)
+  if (trimmed.startsWith('/src/assets/')) {
+    return `.${trimmed}`;
+  }
+  if (trimmed.startsWith('./') || trimmed.startsWith('/') || trimmed.startsWith('blob:')) {
+    return trimmed;
+  }
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {

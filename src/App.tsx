@@ -10,47 +10,29 @@ import { CampaignLobby } from './components/CampaignLobby';
 import { GMWorkspace } from './views/GMWorkspace';
 import { SecondScreenView } from './views/SecondScreenView';
 import { PlayerMobileView } from './views/PlayerMobileView';
-
-interface RouteMatch {
-  view: 'lobby' | 'table' | 'screen' | 'join' | 'play';
-  param?: string;
-}
-
-function parseRoute(pathname: string): RouteMatch {
-  const clean = pathname.replace(/\/+$/, '') || '/';
-  const tableMatch = clean.match(/^\/table\/([a-zA-Z0-9_-]+)$/);
-  if (tableMatch) return { view: 'table', param: tableMatch[1] };
-
-  const screenMatch = clean.match(/^\/screen\/([a-zA-Z0-9_-]+)$/);
-  if (screenMatch) return { view: 'screen', param: screenMatch[1] };
-
-  const joinMatch = clean.match(/^\/join\/([a-zA-Z0-9]+)$/);
-  if (joinMatch) return { view: 'join', param: joinMatch[1].toUpperCase() };
-
-  const playMatch = clean.match(/^\/play\/([a-zA-Z0-9_-]+)$/);
-  if (playMatch) return { view: 'play', param: playMatch[1] };
-
-  return { view: 'lobby' };
-}
+import { navigateToRoute, parseCurrentRoute, type RouteMatch } from './lib/router';
 
 function FolioApp() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [route, setRoute] = useState<RouteMatch>(() => parseRoute(window.location.pathname));
+  const [route, setRoute] = useState<RouteMatch>(() => parseCurrentRoute());
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [memberships, setMemberships] = useState<UserMembership[]>([]);
   const [lobbyLoading, setLobbyLoading] = useState(true);
 
   function navigate(path: string) {
-    window.history.pushState({}, '', path);
-    setRoute(parseRoute(path));
+    setRoute(navigateToRoute(path));
   }
 
   useEffect(() => {
-    const onPop = () => setRoute(parseRoute(window.location.pathname));
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
+    const syncRoute = () => setRoute(parseCurrentRoute());
+    window.addEventListener('hashchange', syncRoute);
+    window.addEventListener('popstate', syncRoute);
+    return () => {
+      window.removeEventListener('hashchange', syncRoute);
+      window.removeEventListener('popstate', syncRoute);
+    };
   }, []);
 
   useEffect(() => {

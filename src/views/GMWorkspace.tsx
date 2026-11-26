@@ -50,6 +50,7 @@ import { applyCampaignTheme, DEFAULT_THEME, getSceneEffects, sanitizeTheme } fro
 import { audioEngine } from '../lib/audioEngine';
 import { evaluateDiceFormula, isDiceFormula, type RollMode } from '../lib/diceEngine';
 import { resolveMediaUrl } from '../lib/mediaStore';
+import { buildAppUrl } from '../lib/router';
 import {
   activateScene,
   broadcastLiveState,
@@ -593,7 +594,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     );
   }
 
-  const secondScreenHref = `${window.location.origin}/screen/${campaign.id}`;
+  const secondScreenHref = buildAppUrl(`/screen/${campaign.id}`);
   const sceneEffects = getSceneEffects(effectiveTheme);
   const effectiveShakePulseMs = Math.max(localShakePulseMs, liveState?.shakePulseMs || 0);
 
