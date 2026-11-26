@@ -4,11 +4,13 @@ import {
   Link2,
   Loader2,
   Music,
+  Pause,
   Play,
   Plus,
   RotateCcw,
   SlidersHorizontal,
   Square,
+  Swords,
   Trash2,
   Upload,
   Volume2,
@@ -25,6 +27,8 @@ import { audioEngine, type LayerTimingInfo } from '../lib/audioEngine';
 import { uploadMediaFile, type CampaignUploadContext } from '../lib/mediaStore';
 import { resolveMediaLinkInBrowser } from '../lib/clientMediaLinkResolver';
 
+type UploadCategory = 'music' | 'duel' | 'ambience' | 'sfx';
+
 interface AudioMixerPanelProps {
   uploadContext: CampaignUploadContext;
   tracks: AudioTrack[];
@@ -37,6 +41,7 @@ interface AudioMixerPanelProps {
     sourceType: 'url' | 'media' | 'youtube';
     url: string;
     mediaId: string;
+    synthPreset?: string;
   }) => Promise<void>;
   onUpdateTrackDsp: (trackId: string, dsp: AudioDspSettings) => Promise<void>;
   onDeleteTrack: (trackId: string) => Promise<void>;
@@ -66,10 +71,10 @@ export function AudioMixerPanel({
   const [ambVol, setAmbVol] = useState(vols.ambience);
   const [sfxVol, setSfxVol] = useState(vols.sfx);
 
-  const [uploadingLayer, setUploadingLayer] = useState<AudioLayer | null>(null);
+  const [uploadingCategory, setUploadingCategory] = useState<UploadCategory | null>(null);
   const [uploadPct, setUploadPct] = useState(0);
 
-  // Expanded advanced DSP drawer per track (progressive disclosure: clean by default)
+  // Expanded advanced DSP drawer per track
   const [expandedTrackId, setExpandedTrackId] = useState<string | null>(null);
   const [draftDsps, setDraftDsps] = useState<Record<string, AudioDspSettings>>({});
   const [liveTiming, setLiveTiming] = useState<Record<'music' | 'ambience', LayerTimingInfo | null>>({
@@ -81,13 +86,17 @@ export function AudioMixerPanel({
   // External link drawer (YouTube, direct audio, or video audio-only)
   const [showUrlForm, setShowUrlForm] = useState(false);
   const [urlName, setUrlName] = useState('');
-  const [urlLayer, setUrlLayer] = useState<AudioLayer>('music');
+  const [urlCategory, setUrlCategory] = useState<UploadCategory>('music');
   const [urlLink, setUrlLink] = useState('');
   const [resolvingLink, setResolvingLink] = useState(false);
 
-  const musicList = tracks.filter((t) => t.layer === 'music');
+  const musicList = tracks.filter((t) => t.layer === 'music' && t.synthPreset !== 'duel');
+  const duelMusicList = tracks.filter((t) => t.layer === 'music' && t.synthPreset === 'duel');
   const ambienceList = tracks.filter((t) => t.layer === 'ambience');
   const sfxList = tracks.filter((t) => t.layer === 'sfx');
+
+  const musicPaused = audioEngine.isLayerPaused('music');
+  const ambiencePaused = audioEngine.isLayerPaused('ambience');
 
   // Poll live playback timeline when an advanced drawer is open
   useEffect(() => {
@@ -117,14 +126,12 @@ export function AudioMixerPanel({
     const next: AudioDspSettings = { ...getTrackDsp(track), ...patch };
     setDraftDsps((prev) => ({ ...prev, [track.id]: next }));
 
-    // Apply immediately in real-time if this track is playing
     if (track.layer === 'music' && activeMusicId === track.id) {
       audioEngine.updateLiveDsp('music', next);
     } else if (track.layer === 'ambience' && activeAmbienceId === track.id) {
       audioEngine.updateLiveDsp('ambience', next);
     }
 
-    // Debounce persistence to Firestore so dragging sliders stays silky smooth
     const prevTimer = saveTimersRef.current[track.id];
     if (prevTimer) window.clearTimeout(prevTimer);
     saveTimersRef.current[track.id] = window.setTimeout(() => {
@@ -132,15 +139,15 @@ export function AudioMixerPanel({
     }, 380);
   }
 
-  async function handlePlayOrStop(track: AudioTrack) {
+  async function handlePlayOrTogglePause(track: AudioTrack) {
     try {
       if (track.layer === 'music' && activeMusicId === track.id) {
-        audioEngine.stopLayer('music');
+        audioEngine.togglePauseLayer('music');
         onSyncAudioUi();
         return;
       }
       if (track.layer === 'ambience' && activeAmbienceId === track.id) {
-        audioEngine.stopLayer('ambience');
+        audioEngine.togglePauseLayer('ambience');
         onSyncAudioUi();
         return;
       }
@@ -152,10 +159,23 @@ export function AudioMixerPanel({
     }
   }
 
-  async function handleDirectFileUpload(layer: AudioLayer, files: FileList | null) {
+  function handleStopTrack(track: AudioTrack) {
+    if (track.layer === 'music' && activeMusicId === track.id) {
+      audioEngine.stopLayer('music');
+      onSyncAudioUi();
+    } else if (track.layer === 'ambience' && activeAmbienceId === track.id) {
+      audioEngine.stopLayer('ambience');
+      onSyncAudioUi();
+    }
+  }
+
+  async function handleDirectFileUpload(category: UploadCategory, files: FileList | null) {
     if (!files || files.length === 0) return;
-    setUploadingLayer(layer);
+    setUploadingCategory(category);
     setUploadPct(5);
+
+    const layer: AudioLayer = category === 'duel' ? 'music' : category;
+    const synthPreset = category === 'duel' ? 'duel' : '';
 
     try {
       for (let i = 0; i < files.length; i++) {
@@ -172,6 +192,7 @@ export function AudioMixerPanel({
           sourceType: 'media',
           url: res.url,
           mediaId: res.mediaId,
+          synthPreset,
         });
         const optNote = res.compressionSummary ? ` (${res.compressionSummary})` : '';
         onNotify(
@@ -183,7 +204,7 @@ export function AudioMixerPanel({
     } catch (err) {
       onNotify(err instanceof Error ? err.message : 'Erro ao enviar arquivo de áudio.');
     } finally {
-      setUploadingLayer(null);
+      setUploadingCategory(null);
       setUploadPct(0);
     }
   }
@@ -192,22 +213,25 @@ export function AudioMixerPanel({
     e.preventDefault();
     if (!urlLink.trim()) return;
     setResolvingLink(true);
+    const layer: AudioLayer = urlCategory === 'duel' ? 'music' : urlCategory;
+    const synthPreset = urlCategory === 'duel' ? 'duel' : '';
     try {
       const data = await resolveMediaLinkInBrowser(urlLink.trim());
       const finalName = (urlName.trim() || data.title || 'Faixa por Link').slice(0, 96);
       await onAddTrack({
         name: finalName,
-        layer: urlLayer,
+        layer,
         sourceType: data.sourceType === 'youtube' ? 'youtube' : 'url',
         url: data.url,
         mediaId: '',
+        synthPreset,
       });
       setUrlName('');
       setUrlLink('');
       setShowUrlForm(false);
       onNotify(
         data.sourceType === 'youtube'
-          ? `Áudio do YouTube "${finalName}" adicionado (modo só áudio).`
+          ? `Áudio do YouTube "${finalName}" adicionado com fade suave.`
           : `Faixa "${finalName}" adicionada ao mixer.`
       );
     } catch (err) {
@@ -236,7 +260,6 @@ export function AudioMixerPanel({
 
     return (
       <div className="border-t vtt-border p-2.5 space-y-2.5 vtt-surface text-[11px]">
-        {/* Live Timeline Scrubbing (when playing) + Saved Start Position */}
         {isPlaying && layerTiming && layerTiming.duration > 0 && track.layer !== 'sfx' ? (
           <label className="block space-y-1">
             <div className="flex justify-between">
@@ -250,7 +273,10 @@ export function AudioMixerPanel({
               min={0}
               max={Math.max(1, Math.floor(layerTiming.duration))}
               step={1}
-              value={Math.min(Math.floor(layerTiming.duration), Math.floor(layerTiming.currentTime))}
+              value={Math.min(
+                Math.floor(layerTiming.duration),
+                Math.floor(layerTiming.currentTime)
+              )}
               onChange={(e) => {
                 const sec = Number(e.target.value);
                 if (track.layer === 'music' || track.layer === 'ambience') {
@@ -290,7 +316,6 @@ export function AudioMixerPanel({
           />
         </label>
 
-        {/* Speed */}
         <label className="block space-y-1">
           <div className="flex justify-between">
             <span>Velocidade</span>
@@ -307,7 +332,6 @@ export function AudioMixerPanel({
           />
         </label>
 
-        {/* Pitch & Muffle (Full DSP for uploaded & direct links; noted clearly for YouTube) */}
         <label className="block space-y-1">
           <div className="flex justify-between">
             <span>Pitch (Tom)</span>
@@ -346,7 +370,7 @@ export function AudioMixerPanel({
 
         {isYt && (
           <p className="text-[10px] vtt-muted leading-snug">
-            Links do YouTube suportam posição e velocidade. Para pitch e abafamento em tempo real, envie o arquivo de áudio.
+            Links do YouTube suportam posição, velocidade e fade suave. Para pitch e abafamento em tempo real, envie o arquivo de áudio.
           </p>
         )}
 
@@ -364,7 +388,7 @@ export function AudioMixerPanel({
     );
   }
 
-  function renderLoopTrackRow(track: AudioTrack, playing: boolean) {
+  function renderLoopTrackRow(track: AudioTrack, activeOnLayer: boolean, isPaused: boolean) {
     const expanded = expandedTrackId === track.id;
     const dsp = getTrackDsp(track);
     const hasDsp = dsp.startSec > 0 || dsp.speed !== 1 || dsp.pitch !== 0 || dsp.muffle > 0;
@@ -372,24 +396,51 @@ export function AudioMixerPanel({
     return (
       <div
         key={track.id}
-        className={`border ${playing ? 'vtt-subtle border-current' : 'vtt-canvas vtt-border'}`}
+        className={`border ${activeOnLayer ? 'vtt-subtle border-current' : 'vtt-canvas vtt-border'}`}
       >
         <div className="flex items-center justify-between gap-1.5 p-2">
           <button
             type="button"
-            onClick={() => void handlePlayOrStop(track)}
+            onClick={() => void handlePlayOrTogglePause(track)}
             className="flex-1 flex items-center gap-2 text-left min-w-0"
+            title={
+              activeOnLayer
+                ? isPaused
+                  ? 'Retomar com fade suave'
+                  : 'Pausar com fade suave'
+                : 'Tocar com fade suave'
+            }
           >
-            {playing ? (
-              <Square className="w-3.5 h-3.5 vtt-accent-text shrink-0" />
+            {activeOnLayer && !isPaused ? (
+              <Pause className="w-3.5 h-3.5 vtt-accent-text shrink-0" />
             ) : (
-              <Play className="w-3.5 h-3.5 vtt-muted shrink-0" />
+              <Play
+                className={`w-3.5 h-3.5 shrink-0 ${
+                  activeOnLayer && isPaused ? 'vtt-accent-text' : 'vtt-muted'
+                }`}
+              />
             )}
             <span className="text-xs font-semibold truncate">{track.name}</span>
+            {activeOnLayer && isPaused && (
+              <span className="text-[10px] vtt-muted whitespace-nowrap">(Pausado)</span>
+            )}
             {track.sourceType === 'youtube' && (
               <Youtube className="w-3.5 h-3.5 text-red-600 shrink-0" aria-label="YouTube áudio" />
             )}
           </button>
+
+          {activeOnLayer && (
+            <button
+              type="button"
+              onClick={() => handleStopTrack(track)}
+              className="p-1 vtt-accent-text hover:opacity-80 shrink-0"
+              title="Parar faixa (com fade suave)"
+              aria-label={`Parar ${track.name}`}
+            >
+              <Square className="w-3.5 h-3.5" />
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setExpandedTrackId((cur) => (cur === track.id ? null : track.id))}
@@ -410,7 +461,7 @@ export function AudioMixerPanel({
             <Trash2 className="w-3 h-3" />
           </button>
         </div>
-        {expanded && renderAdvancedDrawer(track, playing)}
+        {expanded && renderAdvancedDrawer(track, activeOnLayer)}
       </div>
     );
   }
@@ -422,7 +473,7 @@ export function AudioMixerPanel({
         <div>
           <p className="text-xs font-bold font-typewriter">Seus Áudios da Campanha</p>
           <p className="text-[11px] vtt-muted">
-            Envie arquivos (otimizados automaticamente) ou cole links do YouTube/vídeo
+            Fade suave automático ao tocar, pausar, parar ou entrar em Modo Duelo
           </p>
         </div>
         <button
@@ -468,11 +519,12 @@ export function AudioMixerPanel({
               className="w-full px-3 py-2 text-xs border vtt-border vtt-surface"
             />
             <select
-              value={urlLayer}
-              onChange={(e) => setUrlLayer(e.target.value as AudioLayer)}
+              value={urlCategory}
+              onChange={(e) => setUrlCategory(e.target.value as UploadCategory)}
               className="w-full px-3 py-2 text-xs border vtt-border vtt-surface"
             >
-              <option value="music">Música de Fundo (Loop)</option>
+              <option value="music">Música de Fundo (Exploração / Loop)</option>
+              <option value="duel">Música de Modo Duelo (Combate 3D)</option>
               <option value="ambience">Ambiente (Por cima da música)</option>
               <option value="sfx">Efeito Sonoro (One-Shot)</option>
             </select>
@@ -524,7 +576,7 @@ export function AudioMixerPanel({
         </div>
 
         <label className="w-full py-2 px-3 border border-dashed vtt-border vtt-canvas hover:vtt-subtle cursor-pointer flex items-center justify-center gap-2 text-xs font-semibold transition-colors">
-          {uploadingLayer === 'music' ? (
+          {uploadingCategory === 'music' ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin vtt-accent-text" />
               <span>Otimizando e salvando ({uploadPct}%)...</span>
@@ -540,7 +592,7 @@ export function AudioMixerPanel({
             accept="audio/*"
             multiple
             className="hidden"
-            disabled={uploadingLayer !== null}
+            disabled={uploadingCategory !== null}
             onChange={(e) => {
               void handleDirectFileUpload('music', e.target.files);
               e.target.value = '';
@@ -552,7 +604,61 @@ export function AudioMixerPanel({
           <p className="text-[11px] vtt-muted px-1">Nenhuma música adicionada ainda.</p>
         ) : (
           <div className="space-y-1.5">
-            {musicList.map((track) => renderLoopTrackRow(track, activeMusicId === track.id))}
+            {musicList.map((track) =>
+              renderLoopTrackRow(track, activeMusicId === track.id, musicPaused)
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* Layer 1B: Duel Mode Combat Music (Auto-Crossfade in Duel Mode) */}
+      <section className="space-y-2.5 border-t vtt-border pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <span className="text-xs font-semibold flex items-center gap-1.5">
+              <Swords className="w-3.5 h-3.5 vtt-accent-text" />
+              Músicas de Modo Duelo (Combate)
+            </span>
+            <p className="text-[10px] vtt-muted">
+              Tocam automaticamente com crossfade quando o Modo Duelo 3D é iniciado
+            </p>
+          </div>
+        </div>
+
+        <label className="w-full py-2 px-3 border border-dashed vtt-border vtt-canvas hover:vtt-subtle cursor-pointer flex items-center justify-center gap-2 text-xs font-semibold transition-colors">
+          {uploadingCategory === 'duel' ? (
+            <>
+              <Loader2 className="w-3.5 h-3.5 animate-spin vtt-accent-text" />
+              <span>Otimizando e salvando ({uploadPct}%)...</span>
+            </>
+          ) : (
+            <>
+              <Upload className="w-3.5 h-3.5 vtt-accent-text" />
+              <span>Enviar trilha de duelo (.mp3, .wav, .ogg)</span>
+            </>
+          )}
+          <input
+            type="file"
+            accept="audio/*"
+            multiple
+            className="hidden"
+            disabled={uploadingCategory !== null}
+            onChange={(e) => {
+              void handleDirectFileUpload('duel', e.target.files);
+              e.target.value = '';
+            }}
+          />
+        </label>
+
+        {duelMusicList.length === 0 ? (
+          <p className="text-[11px] vtt-muted px-1">
+            Nenhuma música de duelo cadastrada ainda. Envie um arquivo ou adicione link do YouTube na categoria Modo Duelo.
+          </p>
+        ) : (
+          <div className="space-y-1.5">
+            {duelMusicList.map((track) =>
+              renderLoopTrackRow(track, activeMusicId === track.id, musicPaused)
+            )}
           </div>
         )}
       </section>
@@ -584,7 +690,7 @@ export function AudioMixerPanel({
         </div>
 
         <label className="w-full py-2 px-3 border border-dashed vtt-border vtt-canvas hover:vtt-subtle cursor-pointer flex items-center justify-center gap-2 text-xs font-semibold transition-colors">
-          {uploadingLayer === 'ambience' ? (
+          {uploadingCategory === 'ambience' ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin vtt-accent-text" />
               <span>Otimizando e salvando ({uploadPct}%)...</span>
@@ -600,7 +706,7 @@ export function AudioMixerPanel({
             accept="audio/*"
             multiple
             className="hidden"
-            disabled={uploadingLayer !== null}
+            disabled={uploadingCategory !== null}
             onChange={(e) => {
               void handleDirectFileUpload('ambience', e.target.files);
               e.target.value = '';
@@ -612,7 +718,9 @@ export function AudioMixerPanel({
           <p className="text-[11px] vtt-muted px-1">Nenhum ambiente adicionado ainda.</p>
         ) : (
           <div className="space-y-1.5">
-            {ambienceList.map((track) => renderLoopTrackRow(track, activeAmbienceId === track.id))}
+            {ambienceList.map((track) =>
+              renderLoopTrackRow(track, activeAmbienceId === track.id, ambiencePaused)
+            )}
           </div>
         )}
       </section>
@@ -644,7 +752,7 @@ export function AudioMixerPanel({
         </div>
 
         <label className="w-full py-2 px-3 border border-dashed vtt-border vtt-canvas hover:vtt-subtle cursor-pointer flex items-center justify-center gap-2 text-xs font-semibold transition-colors">
-          {uploadingLayer === 'sfx' ? (
+          {uploadingCategory === 'sfx' ? (
             <>
               <Loader2 className="w-3.5 h-3.5 animate-spin vtt-accent-text" />
               <span>Otimizando e salvando ({uploadPct}%)...</span>
@@ -660,7 +768,7 @@ export function AudioMixerPanel({
             accept="audio/*"
             multiple
             className="hidden"
-            disabled={uploadingLayer !== null}
+            disabled={uploadingCategory !== null}
             onChange={(e) => {
               void handleDirectFileUpload('sfx', e.target.files);
               e.target.value = '';
@@ -675,13 +783,14 @@ export function AudioMixerPanel({
             {sfxList.map((track) => {
               const expanded = expandedTrackId === track.id;
               const dsp = getTrackDsp(track);
-              const hasDsp = dsp.startSec > 0 || dsp.speed !== 1 || dsp.pitch !== 0 || dsp.muffle > 0;
+              const hasDsp =
+                dsp.startSec > 0 || dsp.speed !== 1 || dsp.pitch !== 0 || dsp.muffle > 0;
               return (
                 <div key={track.id} className="border vtt-border vtt-canvas">
                   <div className="flex items-center justify-between gap-1 pr-1">
                     <button
                       type="button"
-                      onClick={() => void handlePlayOrStop(track)}
+                      onClick={() => void handlePlayOrTogglePause(track)}
                       className="flex-1 py-2 px-2.5 text-xs font-semibold hover:vtt-subtle active:scale-[0.98] transition-transform truncate text-left flex items-center gap-1.5"
                     >
                       <span>▶ {track.name}</span>
@@ -691,7 +800,9 @@ export function AudioMixerPanel({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setExpandedTrackId((cur) => (cur === track.id ? null : track.id))}
+                      onClick={() =>
+                        setExpandedTrackId((cur) => (cur === track.id ? null : track.id))
+                      }
                       className={`p-1 shrink-0 ${
                         expanded || hasDsp ? 'vtt-accent-text' : 'vtt-muted hover:opacity-100'
                       }`}

@@ -9,6 +9,7 @@ import {
   Lock,
   Maximize2,
   SlidersHorizontal,
+  Swords,
   Trash2,
   Unlock,
   Upload,
@@ -34,6 +35,7 @@ import { TokenEditorPanel } from './TokenEditorPanel';
 
 export type CanvasTool =
   | 'move'
+  | 'duel'
   | 'brush'
   | 'text'
   | 'ruler'
@@ -60,6 +62,7 @@ interface TabletopCanvasProps {
   onFogStrokesChange?: (strokes: FogStroke[]) => void;
   onWallsChange?: (walls: SceneWall[]) => void;
   onShowTokenPopup?: (handout: ActiveHandoutProjection) => void;
+  onRequestDuelPair?: (tokenA: SceneToken, tokenB: SceneToken) => void;
   onSaveToVault?: (token: SceneToken) => void;
   onToolChange?: (tool: CanvasTool) => void;
   onNotify?: (msg: string) => void;
@@ -175,6 +178,7 @@ export function TabletopCanvas({
   onFogStrokesChange,
   onWallsChange,
   onShowTokenPopup,
+  onRequestDuelPair,
   onSaveToVault,
   onToolChange,
   onNotify,
@@ -194,6 +198,7 @@ export function TabletopCanvas({
   const [localFog, setLocalFog] = useState<FogStroke[]>(scene?.fogStrokes || []);
   const [localWalls, setLocalWalls] = useState<SceneWall[]>(scene?.walls || []);
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
+  const [duelCandidateId, setDuelCandidateId] = useState<string | null>(null);
   const [draggingTokenId, setDraggingTokenId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
   const [resizingState, setResizingState] = useState<ResizeInteractionState | null>(null);
@@ -943,6 +948,32 @@ export function TabletopCanvas({
   function handleTokenPointerDown(e: React.PointerEvent, token: SceneToken) {
     if (mode !== 'gm') return;
     if (e.button !== 0) return;
+
+    // 1. Direct Confrontation / Duel Mode Selection (clicking Token 1 then Token 2, or Shift+Click)
+    const isDuelSelection =
+      activeTool === 'duel' ||
+      Boolean(duelCandidateId) ||
+      (activeTool === 'move' && e.shiftKey && selectedTokenId && selectedTokenId !== token.id);
+
+    if (isDuelSelection && token.layerKind !== 'text' && token.layerKind !== 'brush') {
+      e.stopPropagation();
+      setContextMenu(null);
+      const firstId = duelCandidateId || (e.shiftKey ? selectedTokenId : null);
+      if (!firstId || firstId === token.id) {
+        setDuelCandidateId(token.id);
+        setSelectedTokenId(token.id);
+        onNotify?.(`"${token.name}" selecionado para confronto. Agora clique no 2º token (oponente)!`);
+        return;
+      }
+      const firstToken = localTokens.find((t) => t.id === firstId);
+      if (firstToken && firstToken.id !== token.id) {
+        setDuelCandidateId(null);
+        setSelectedTokenId(null);
+        onRequestDuelPair?.(firstToken, token);
+        return;
+      }
+    }
+
     if (activeTool !== 'move' || e.shiftKey) return;
     e.stopPropagation();
     setContextMenu(null);
@@ -1249,6 +1280,41 @@ export function TabletopCanvas({
           <p className="text-sm font-bold font-typewriter">
             Solte a imagem para adicionar ao mapa e salvar no Acervo
           </p>
+        </div>
+      )}
+
+      {/* Duel Pair Selection Banner */}
+      {mode === 'gm' && (activeTool === 'duel' || duelCandidateId) && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-40 px-4 py-2 bg-stone-950/95 border border-amber-500 text-stone-100 shadow-2xl flex items-center gap-3 text-xs"
+        >
+          <Swords className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>
+            {duelCandidateId ? (
+              <>
+                1º Combatente:{' '}
+                <strong className="text-amber-300">
+                  {localTokens.find((t) => t.id === duelCandidateId)?.name || 'Token'}
+                </strong>{' '}
+                — Agora clique no <strong>2º Token (Oponente)</strong> para iniciar o Modo Duelo 3D!
+              </>
+            ) : (
+              <>
+                <strong>Modo Confronto Direto:</strong> Clique no 1º Token (Player) e depois no 2º Token (NPC/Inimigo).
+              </>
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setDuelCandidateId(null);
+              if (activeTool === 'duel') onToolChange?.('move');
+            }}
+            className="px-2 py-0.5 text-[11px] border border-stone-700 hover:bg-stone-800"
+          >
+            Cancelar
+          </button>
         </div>
       )}
 
@@ -1799,15 +1865,31 @@ export function TabletopCanvas({
               ·
             </span>
             {selectedToken.layerKind !== 'text' && (
-              <button
-                type="button"
-                onClick={() => triggerTokenHit(selectedToken.id)}
-                className="px-2 py-1.5 text-xs font-semibold bg-red-700 hover:bg-red-800 text-white flex items-center gap-1 whitespace-nowrap shrink-0"
-                title="Efeito de dano / hit no token"
-              >
-                <Zap className="w-3.5 h-3.5" />
-                Hit
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDuelCandidateId(selectedToken.id);
+                    onNotify?.(
+                      `"${selectedToken.name}" pronto para duelo! Clique agora no token do oponente.`
+                    );
+                  }}
+                  className="px-2.5 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-stone-950 flex items-center gap-1 whitespace-nowrap shrink-0"
+                  title="Selecionar um segundo token para abrir o Modo Duelo 3D (ou Shift+Clique em outro token)"
+                >
+                  <Swords className="w-3.5 h-3.5" />
+                  Duelo 3D
+                </button>
+                <button
+                  type="button"
+                  onClick={() => triggerTokenHit(selectedToken.id)}
+                  className="px-2 py-1.5 text-xs font-semibold bg-red-700 hover:bg-red-800 text-white flex items-center gap-1 whitespace-nowrap shrink-0"
+                  title="Efeito de dano / hit no token"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  Hit
+                </button>
+              </>
             )}
             <button
               type="button"

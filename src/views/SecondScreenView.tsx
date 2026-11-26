@@ -6,6 +6,7 @@ import { TabletopCanvas } from '../components/TabletopCanvas';
 import { SceneEffectsStage } from '../components/SceneEffectsOverlay';
 import { HandoutOverlay } from '../components/HandoutOverlay';
 import { DiceRollOverlay, type ActiveDiceAnimation } from '../components/DiceRollOverlay';
+import { DuelArena3DOverlay } from '../components/DuelArena3DOverlay';
 
 interface SecondScreenViewProps {
   campaignId: string;
@@ -94,6 +95,13 @@ export function SecondScreenView({ campaignId }: SecondScreenViewProps) {
           mode="screen"
         />
       </SceneEffectsStage>
+
+      {/* 3D Turn-Based Confrontation / Duel Mode Stage */}
+      <DuelArena3DOverlay
+        campaignId={campaignId}
+        duel={liveState.activeScene?.activeDuel || null}
+        mode="screen"
+      />
 
       {/* Fullscreen Handout Pop-up controlled by GM */}
       <HandoutOverlay

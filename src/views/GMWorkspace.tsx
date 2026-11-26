@@ -28,11 +28,13 @@ import {
   Redo2,
   Ruler,
   SlidersHorizontal,
+  Swords,
   Type,
   Undo2,
   Volume2,
 } from 'lucide-react';
 import type {
+  ActiveDuelState,
   ActiveHandoutProjection,
   AudioTrack,
   BrushStyleId,
@@ -42,11 +44,13 @@ import type {
   CampaignTheme,
   CharacterSheet,
   DiceRoll,
+  DuelActionItem,
   FogStroke,
   GridConfig,
   Handout,
   LiveTableState,
   Scene,
+  SceneDuelConfig,
   SceneToken,
   SceneWall,
   SheetBlock,
@@ -55,6 +59,12 @@ import { applyCampaignTheme, DEFAULT_THEME, getSceneEffects, sanitizeTheme } fro
 import { audioEngine } from '../lib/audioEngine';
 import { evaluateDiceFormula, isDiceFormula, type RollMode } from '../lib/diceEngine';
 import { resolveMediaUrl } from '../lib/mediaStore';
+import {
+  findSheetForToken,
+  loadSceneDuelConfig,
+  playCombatCursorSfx,
+  saveSceneDuelConfig,
+} from '../lib/duelEngine';
 import {
   loadVaultAssets,
   removeAssetFromVault,
@@ -87,6 +97,7 @@ import {
   subscribeLiveState,
   subscribeRolls,
   subscribeSheets,
+  syncLiveDuelState,
   toLiveSceneSnapshot,
   triggerShakePulse,
   updateAudioTrackDsp,
@@ -104,6 +115,7 @@ import { TabletopCanvas, type CanvasTool } from '../components/TabletopCanvas';
 import { SceneEffectsStage } from '../components/SceneEffectsOverlay';
 import { DiceRollOverlay, type ActiveDiceAnimation } from '../components/DiceRollOverlay';
 import { HandoutOverlay } from '../components/HandoutOverlay';
+import { DuelArena3DOverlay, DuelSetupModal } from '../components/DuelArena3DOverlay';
 import { ScenesHandoutsPanel } from '../components/ScenesHandoutsPanel';
 import { CharacterSheetPanel } from '../components/CharacterSheetPanel';
 import { DiceChatPanel } from '../components/DiceChatPanel';
@@ -169,6 +181,21 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   const [vaultAssets, setVaultAssets] = useState<VaultAssetItem[]>(() =>
     loadVaultAssets(campaignId)
   );
+
+  // 3D Direct Confrontation / Duel Mode state
+  const [duelSetupPair, setDuelSetupPair] = useState<{
+    tokenA: SceneToken;
+    tokenB: SceneToken;
+  } | null>(null);
+  const [activeDuel, setActiveDuel] = useState<ActiveDuelState | null>(null);
+  const [sceneDuelConfig, setSceneDuelConfig] = useState<SceneDuelConfig>({
+    bgUrl: '',
+    bgMediaId: '',
+    bgMediaKind: 'image',
+    arenaPreset: 'expedition_ruins',
+    musicTrackId: '',
+  });
+  const preDuelMusicIdRef = useRef<string | null>(null);
 
   // Undo / Redo History Stacks (Ctrl+Z / Ctrl+Y)
   const [undoStack, setUndoStack] = useState<SceneHistorySnapshot[]>([]);
@@ -309,13 +336,17 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     return scenes.find((s) => s.id === campaign?.activeSceneId) || scenes[0];
   }, [scenes, campaign?.activeSceneId]);
 
+  useEffect(() => {
+    setSceneDuelConfig(loadSceneDuelConfig(campaignId, activeScene));
+  }, [campaignId, activeScene]);
+
   const activeSceneForCanvas = useMemo(() => {
     if (!activeScene) return null;
     return {
-      ...toLiveSceneSnapshot(activeScene),
+      ...toLiveSceneSnapshot(activeScene, activeDuel, sceneDuelConfig),
       tokens: activeScene.tokens,
     };
-  }, [activeScene]);
+  }, [activeScene, activeDuel, sceneDuelConfig]);
 
   const uploadContext = useMemo(
     () => ({
@@ -481,6 +512,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       } else if (key === 'w') {
         e.preventDefault();
         setActiveTool((t) => (t === 'wall' ? 'move' : 'wall'));
+      } else if (key === 'd') {
+        e.preventDefault();
+        setActiveTool((t) => (t === 'duel' ? 'move' : 'duel'));
       } else if (key === 'f') {
         e.preventDefault();
         setDrawerOpen((o) => !o);
@@ -807,6 +841,256 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     }
   }
 
+  async function handleUpdateSceneDuelConfig(nextConfig: SceneDuelConfig) {
+    if (!campaign || !activeScene) return;
+    saveSceneDuelConfig(campaign.id, activeScene.id, nextConfig);
+    setSceneDuelConfig(nextConfig);
+    try {
+      await syncLiveDuelState(
+        campaign.id,
+        activeScene,
+        activeDuel,
+        liveStateRef.current,
+        nextConfig
+      );
+    } catch {
+      // Ignore transient errors
+    }
+  }
+
+  async function handleStartDuel(duel: ActiveDuelState, savedConfig: SceneDuelConfig) {
+    if (!campaign || !activeScene) return;
+    saveSceneDuelConfig(campaign.id, activeScene.id, savedConfig);
+    setSceneDuelConfig(savedConfig);
+    setDuelSetupPair(null);
+    setActiveTool('move');
+    setActiveDuel(duel);
+
+    // Remember current music track and smoothly crossfade into Duel Music if configured
+    preDuelMusicIdRef.current = audioEngine.getActiveTrackIds().musicId;
+    const targetMusicId =
+      duel.musicTrackId ||
+      audioTracks.find((t) => t.layer === 'music' && t.synthPreset === 'duel')?.id ||
+      '';
+    if (targetMusicId) {
+      const mTrack = audioTracks.find((t) => t.id === targetMusicId);
+      if (mTrack && audioEngine.getActiveTrackIds().musicId !== mTrack.id) {
+        try {
+          await audioEngine.playTrack(mTrack, campaign.id);
+          setAudioIds(audioEngine.getActiveTrackIds());
+        } catch {
+          // Ignore autoplay restriction silently
+        }
+      }
+    }
+
+    try {
+      await syncLiveDuelState(
+        campaign.id,
+        activeScene,
+        duel,
+        liveStateRef.current,
+        savedConfig
+      );
+    } catch {
+      notify('Erro ao sincronizar Modo Duelo 3D.');
+    }
+    notify(`⚔️ Modo Duelo 3D iniciado: ${duel.player.name} vs ${duel.npc.name}`);
+  }
+
+  async function handleUpdateDuel(nextDuel: ActiveDuelState) {
+    if (!campaign || !activeScene) return;
+    const prevMusicId = activeDuel?.musicTrackId;
+    setActiveDuel(nextDuel);
+
+    // Sync any music change selected directly inside the 3D arena
+    if (nextDuel.musicTrackId && nextDuel.musicTrackId !== prevMusicId) {
+      const mTrack = audioTracks.find((t) => t.id === nextDuel.musicTrackId);
+      if (mTrack && audioEngine.getActiveTrackIds().musicId !== mTrack.id) {
+        try {
+          await audioEngine.playTrack(mTrack, campaign.id);
+          setAudioIds(audioEngine.getActiveTrackIds());
+        } catch {
+          // Ignore
+        }
+      }
+    }
+
+    try {
+      await syncLiveDuelState(
+        campaign.id,
+        activeScene,
+        nextDuel,
+        liveStateRef.current,
+        sceneDuelConfig
+      );
+    } catch {
+      // Ignore transient sync error
+    }
+  }
+
+  async function handleExecuteDuelAction(params: {
+    side: 'player' | 'npc';
+    action: DuelActionItem;
+    rollDamageOnly?: boolean;
+  }) {
+    if (!campaign || !activeScene || !activeDuel) return;
+    const attacker = params.side === 'player' ? activeDuel.player : activeDuel.npc;
+    const defenderSide = params.side === 'player' ? 'npc' : 'player';
+
+    const attackerToken = activeScene.tokens.find((t) => t.id === attacker.tokenId);
+    const attackerSheet = attacker.sheetId
+      ? sheets.find((s) => s.id === attacker.sheetId) || null
+      : attackerToken
+      ? findSheetForToken(attackerToken, sheets)
+      : null;
+
+    const formulaToRoll =
+      params.rollDamageOnly && params.action.damageFormula
+        ? params.action.damageFormula
+        : params.action.formula;
+
+    const evalResult = evaluateDiceFormula(formulaToRoll, {
+      blocks: attackerSheet?.blocks,
+      mode: 'normal',
+      forceExplode: false,
+    });
+
+    const isDefense = params.action.category === 'defense';
+    const isSpell = params.action.category === 'spell';
+    const isHeal =
+      isSpell &&
+      /cura|heal|vida|restaur|bênção|bencao/i.test(
+        `${params.action.label} ${params.action.description || ''}`
+      );
+    const fxKind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield' = isHeal
+      ? 'heal'
+      : isDefense
+      ? 'shield'
+      : isSpell
+      ? 'arcane'
+      : /tiro|arco|pistola|rifle|flecha|disparo|shot/i.test(params.action.label)
+      ? 'shot'
+      : /soco|martelo|maça|maca|porrada|chute|esmag/i.test(params.action.label)
+      ? 'blunt'
+      : 'blade';
+
+    playCombatCursorSfx(fxKind);
+
+    const now = Date.now();
+    const shouldApplyHpDelta =
+      params.rollDamageOnly ||
+      isHeal ||
+      (!params.action.damageFormula && params.action.category === 'attack');
+
+    const nextPlayer = { ...activeDuel.player };
+    const nextNpc = { ...activeDuel.npc };
+
+    if (params.side === 'player') {
+      nextPlayer.lastLungeAtMs = now;
+    } else {
+      nextNpc.lastLungeAtMs = now;
+    }
+
+    let nextEffect: ActiveDuelState['lastEffect'] = null;
+
+    if (isHeal || isDefense) {
+      const selfTarget = params.side === 'player' ? nextPlayer : nextNpc;
+      if (isHeal && evalResult.total > 0) {
+        selfTarget.hpCurrent = Math.min(selfTarget.hpMax, selfTarget.hpCurrent + evalResult.total);
+      }
+      if (isDefense) {
+        selfTarget.isDefending = true;
+      }
+      nextEffect = {
+        id: `fx_${now}`,
+        timestampMs: now,
+        targetSide: params.side,
+        kind: fxKind,
+        damageAmount: Math.max(0, evalResult.total),
+        label: `${params.action.label} (${evalResult.total})`,
+        isCrit: evalResult.outcome === 'crit',
+      };
+    } else {
+      const targetObj = defenderSide === 'player' ? nextPlayer : nextNpc;
+      targetObj.lastHitAtMs = now;
+      if (shouldApplyHpDelta && evalResult.total > 0) {
+        targetObj.hpCurrent = Math.max(0, targetObj.hpCurrent - evalResult.total);
+      }
+      nextEffect = {
+        id: `fx_${now}`,
+        timestampMs: now,
+        targetSide: defenderSide,
+        kind: fxKind,
+        damageAmount: shouldApplyHpDelta ? Math.max(0, evalResult.total) : 0,
+        label: `${params.action.label} · ${evalResult.total}`,
+        isCrit: evalResult.outcome === 'crit',
+      };
+    }
+
+    const actionDisplay = params.rollDamageOnly
+      ? `${params.action.label} (Dano)`
+      : params.action.label;
+
+    const nextDuel: ActiveDuelState = {
+      ...activeDuel,
+      player: nextPlayer,
+      npc: nextNpc,
+      lastActionSummary: `${attacker.name} usou ${actionDisplay}: ${evalResult.total} (${evalResult.summary})`,
+      lastEffect: nextEffect,
+    };
+
+    await handleUpdateDuel(nextDuel);
+
+    await handleDiceOrChat({
+      input: formulaToRoll,
+      label: `${attacker.name} · ${actionDisplay}`,
+      mode: 'normal',
+      explode: false,
+      visibility: params.side === 'npc' ? 'gm_only' : 'public',
+      blocks: attackerSheet?.blocks,
+      rollerName: attacker.name,
+    });
+  }
+
+  async function handleEndDuel() {
+    if (!campaign || !activeScene) return;
+    setActiveDuel(null);
+    try {
+      await syncLiveDuelState(
+        campaign.id,
+        activeScene,
+        null,
+        liveStateRef.current,
+        sceneDuelConfig
+      );
+    } catch {
+      // Ignore
+    }
+
+    // Smoothly fade back to pre-duel music or scene linked music
+    const restoreId = preDuelMusicIdRef.current || activeScene.linkedMusicId || null;
+    try {
+      if (restoreId) {
+        const prevTrack = audioTracks.find((t) => t.id === restoreId);
+        if (prevTrack && audioEngine.getActiveTrackIds().musicId !== prevTrack.id) {
+          await audioEngine.playTrack(prevTrack, campaign.id);
+        }
+      } else if (audioEngine.getActiveTrackIds().musicId) {
+        const currentTrack = audioTracks.find(
+          (t) => t.id === audioEngine.getActiveTrackIds().musicId
+        );
+        if (currentTrack?.synthPreset === 'duel') {
+          audioEngine.stopLayer('music');
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    setAudioIds(audioEngine.getActiveTrackIds());
+    notify('Modo Duelo 3D encerrado.');
+  }
+
   if (loading) {
     return (
       <div className="h-screen vtt-canvas flex items-center justify-center">
@@ -1108,6 +1392,36 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           >
             <Activity className="w-3.5 h-3.5 vtt-accent-text" />
             Tremor
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (activeDuel) {
+                notify('O Modo Duelo 3D já está ativo na mesa.');
+                return;
+              }
+              const characterTokens = (activeScene?.tokens || []).filter(
+                (t) => !t.layerKind || t.layerKind === 'token'
+              );
+              if (characterTokens.length === 2) {
+                setDuelSetupPair({
+                  tokenA: characterTokens[0],
+                  tokenB: characterTokens[1],
+                });
+                return;
+              }
+              setActiveTool((t) => (t === 'duel' ? 'move' : 'duel'));
+            }}
+            className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              activeTool === 'duel' || activeDuel
+                ? 'bg-amber-700 text-white border-amber-500 font-semibold'
+                : 'vtt-canvas vtt-border hover:border-amber-500/60'
+            }`}
+            title="Modo Confronto Direto / Duelo 3D (D) — selecione 2 tokens para iniciar combate 3D"
+          >
+            <Swords className="w-3.5 h-3.5 text-amber-400" />
+            Confronto 3D
           </button>
         </div>
 
@@ -1433,6 +1747,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 onWallsChange={(w) => void handleWallsChange(w)}
                 onShowTokenPopup={(h) => void handleProjectHandout(h)}
                 onSaveToVault={handleSaveTokenToVault}
+                onRequestDuelPair={(a, b) => setDuelSetupPair({ tokenA: a, tokenB: b })}
                 onToolChange={setActiveTool}
                 onNotify={notify}
               />
@@ -1520,6 +1835,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 uploadContext={uploadContext}
                 scenes={scenes}
                 activeScene={activeScene}
+                activeSceneDuelConfig={sceneDuelConfig}
                 handouts={handouts}
                 activeHandout={liveState?.activeHandout || null}
                 audioTracks={audioTracks}
@@ -1527,6 +1843,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 sheets={sheets}
                 vaultAssets={vaultAssets}
                 onSelectScene={(s) => void handleSelectScene(s)}
+                onUpdateSceneDuelConfig={(cfg) => void handleUpdateSceneDuelConfig(cfg)}
                 onCreateScene={async (data) => {
                   const id = await createScene({
                     campaignId: campaign.id,
@@ -1779,6 +2096,42 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           onDismiss={() => setPreviewHandout(false)}
         />
       )}
+
+      {/* Confrontation Pop-up when 2 Tokens are selected for 3D Duel Mode */}
+      {duelSetupPair && activeScene && (
+        <DuelSetupModal
+          uploadContext={uploadContext}
+          scene={activeScene}
+          tokenA={duelSetupPair.tokenA}
+          tokenB={duelSetupPair.tokenB}
+          sheets={sheets}
+          audioTracks={audioTracks}
+          initialConfig={sceneDuelConfig}
+          onStartDuel={(duel, savedConfig) => void handleStartDuel(duel, savedConfig)}
+          onCancel={() => setDuelSetupPair(null)}
+          onNotify={notify}
+        />
+      )}
+
+      {/* Fullscreen 3D Turn-Based Confrontation / Duel Arena */}
+      <DuelArena3DOverlay
+        campaignId={campaign.id}
+        uploadContext={uploadContext}
+        duel={activeDuel}
+        mode="gm"
+        onUpdateDuel={(next) => void handleUpdateDuel(next)}
+        onExecuteDuelAction={(params) => void handleExecuteDuelAction(params)}
+        onEndDuel={() => void handleEndDuel()}
+        onSaveSceneDuelBg={(bgUrl, bgMediaId, bgMediaKind) =>
+          void handleUpdateSceneDuelConfig({
+            ...sceneDuelConfig,
+            bgUrl,
+            bgMediaId,
+            bgMediaKind,
+          })
+        }
+        onNotify={notify}
+      />
 
       {/* Dynamic Tumbling Dice Roll Animation */}
       <DiceRollOverlay roll={activeRollAnim} onComplete={clearRollAnim} position="bottom-right" />

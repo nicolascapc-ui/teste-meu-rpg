@@ -37,6 +37,7 @@ import { TabletopCanvas } from '../components/TabletopCanvas';
 import { SceneEffectsStage } from '../components/SceneEffectsOverlay';
 import { HandoutOverlay } from '../components/HandoutOverlay';
 import { DiceRollOverlay, type ActiveDiceAnimation } from '../components/DiceRollOverlay';
+import { DuelArena3DOverlay } from '../components/DuelArena3DOverlay';
 
 type MobileTab = 'sheet' | 'dice' | 'clues' | 'scene';
 
@@ -449,6 +450,32 @@ export function PlayerMobileView({
           onDismiss={() => setOpenedPrivateHandout(null)}
         />
       )}
+
+      {/* 3D Confrontation / Duel Arena for Player */}
+      <DuelArena3DOverlay
+        campaignId={campaignId}
+        duel={liveState?.activeScene?.activeDuel || null}
+        mode="player"
+        onExecuteDuelAction={({ side, action, rollDamageOnly }) => {
+          if (side !== 'player') return;
+          const formulaToRoll =
+            rollDamageOnly && action.damageFormula ? action.damageFormula : action.formula;
+          const activePlayerName =
+            liveState?.activeScene?.activeDuel?.player.name ||
+            sheets[0]?.name ||
+            user.displayName ||
+            'Jogador';
+          void handleRoll({
+            input: formulaToRoll,
+            label: rollDamageOnly ? `${action.label} (Dano)` : action.label,
+            mode: 'normal',
+            explode: false,
+            visibility: 'public',
+            blocks: sheets[0]?.blocks,
+            rollerName: activePlayerName,
+          });
+        }}
+      />
 
       {/* Dynamic Rolling Dice Animation on Mobile */}
       <DiceRollOverlay roll={activeRollAnim} onComplete={clearRollAnim} position="center" />

@@ -17,6 +17,7 @@ import { DEFAULT_THEME, sanitizeTheme } from './themes';
 import { createBlankSheetBlocks, DEFAULT_WIKI_FOLDERS, STARTER_ASSETS } from './templates';
 import {
   FIELD_LIMITS,
+  type ActiveDuelState,
   type ActiveHandoutProjection,
   type AudioDspSettings,
   type AudioLayer,
@@ -39,6 +40,7 @@ import {
   type RollOutcome,
   type Scene,
   type SceneCategory,
+  type SceneDuelConfig,
   type SceneMediaKind,
   type SceneToken,
   type SceneWall,
@@ -125,7 +127,25 @@ export function broadcastLiveState(campaignId: string, state: LiveTableState) {
   }
 }
 
-export function toLiveSceneSnapshot(scene: Scene): LiveSceneSnapshot {
+export function sanitizePublicDuelState(
+  duel: ActiveDuelState | null | undefined
+): ActiveDuelState | null {
+  if (!duel) return null;
+  return stripUndefinedDeep({
+    ...duel,
+    // Keep NPC actions strictly hidden from public/player snapshots
+    npc: {
+      ...duel.npc,
+      actions: [],
+    },
+  });
+}
+
+export function toLiveSceneSnapshot(
+  scene: Scene,
+  activeDuel?: ActiveDuelState | null,
+  duelConfig?: SceneDuelConfig
+): LiveSceneSnapshot {
   return stripUndefinedDeep({
     id: scene.id,
     name: scene.name,
@@ -139,7 +159,37 @@ export function toLiveSceneSnapshot(scene: Scene): LiveSceneSnapshot {
     walls: scene.walls || [],
     dynamicVision: Boolean(scene.dynamicVision),
     tokens: (scene.tokens || []).filter((t) => !t.hiddenFromPlayers),
+    activeDuel: sanitizePublicDuelState(activeDuel),
+    duelConfig,
   });
+}
+
+export async function syncLiveDuelState(
+  campaignId: string,
+  scene: Scene,
+  activeDuel: ActiveDuelState | null,
+  currentLiveState: LiveTableState | null,
+  duelConfig?: SceneDuelConfig
+) {
+  const snapshot = toLiveSceneSnapshot(
+    scene,
+    activeDuel,
+    duelConfig || currentLiveState?.activeScene?.duelConfig
+  );
+  if (currentLiveState) {
+    broadcastLiveState(campaignId, {
+      ...currentLiveState,
+      activeScene: snapshot,
+    });
+  }
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      activeScene: snapshot,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -1387,6 +1437,7 @@ export async function createAudioTrack(params: {
   sourceType: 'url' | 'media' | 'youtube';
   url?: string;
   mediaId?: string;
+  synthPreset?: string;
   dsp?: AudioDspSettings;
 }): Promise<string> {
   const id = makeId('aud');
@@ -1403,7 +1454,7 @@ export async function createAudioTrack(params: {
       name: clampStr(params.name, FIELD_LIMITS.TRACK_NAME) || 'Faixa de Áudio',
       layer: params.layer,
       sourceType: params.sourceType,
-      synthPreset: '',
+      synthPreset: clampStr(params.synthPreset, 60),
       url: clampStr(params.url, FIELD_LIMITS.URL_MAX),
       mediaId: clampStr(params.mediaId, FIELD_LIMITS.MEDIA_ID),
       dsp: cleanDsp,

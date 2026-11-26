@@ -340,6 +340,92 @@ export interface Campaign {
   updatedAt?: Timestamp | number;
 }
 
+export type DuelArenaPresetId =
+  | 'expedition_ruins'
+  | 'persona_crimson'
+  | 'pokemon_stadium'
+  | 'astral_sanctuary'
+  | 'noir_rain'
+  | 'shadow_forest';
+
+export type DuelCameraAngle =
+  | 'dynamic'
+  | 'stadium'
+  | 'showdown'
+  | 'focus_player'
+  | 'focus_npc';
+
+export type DuelCursorAttackMode = 'none' | 'blade' | 'blunt' | 'shot' | 'arcane';
+
+export interface DuelActionItem {
+  id: string;
+  label: string;
+  category: 'attack' | 'skill' | 'spell' | 'defense';
+  formula: string;
+  damageFormula?: string;
+  damageLabel?: string;
+  description?: string;
+  sourceLabel?: string;
+}
+
+export interface DuelCombatantState {
+  tokenId: string;
+  sheetId?: string;
+  name: string;
+  subtitle?: string;
+  role: 'player' | 'npc';
+  imageUrl: string;
+  mediaId?: string;
+  color: string;
+  hpCurrent: number;
+  hpMax: number;
+  mpCurrent?: number;
+  mpMax?: number;
+  mpLabel?: string;
+  actions: DuelActionItem[];
+  lastHitAtMs?: number;
+  lastLungeAtMs?: number;
+  isDefending?: boolean;
+}
+
+export interface DuelLiveEffect {
+  id: string;
+  timestampMs: number;
+  targetSide: 'player' | 'npc';
+  kind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield';
+  damageAmount?: number;
+  label?: string;
+  isCrit?: boolean;
+  slashPoints?: Array<{ x: number; y: number }>;
+}
+
+export interface ActiveDuelState {
+  id: string;
+  sceneId: string;
+  activeTurn: 'player' | 'npc';
+  round: number;
+  arenaPreset: DuelArenaPresetId;
+  cameraAngle: DuelCameraAngle;
+  bgUrl: string;
+  bgMediaId?: string;
+  bgMediaKind?: SceneMediaKind;
+  musicTrackId?: string;
+  hidePlayerActionsOnScreen: boolean;
+  player: DuelCombatantState;
+  npc: DuelCombatantState;
+  lastActionSummary?: string;
+  lastEffect?: DuelLiveEffect | null;
+  startedAtMs: number;
+}
+
+export interface SceneDuelConfig {
+  bgUrl: string;
+  bgMediaId: string;
+  bgMediaKind?: SceneMediaKind;
+  arenaPreset: DuelArenaPresetId;
+  musicTrackId: string;
+}
+
 export interface LiveSceneSnapshot {
   id: string;
   name: string;
@@ -353,6 +439,8 @@ export interface LiveSceneSnapshot {
   walls?: SceneWall[];
   dynamicVision?: boolean;
   tokens: SceneToken[];
+  activeDuel?: ActiveDuelState | null;
+  duelConfig?: SceneDuelConfig;
 }
 
 export interface LiveTableState {

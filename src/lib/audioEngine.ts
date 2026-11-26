@@ -79,7 +79,8 @@ function loadYouTubeIframeApi(): Promise<YTNamespace> {
       const script = document.createElement('script');
       script.src = 'https://www.youtube.com/iframe_api';
       script.async = true;
-      script.onerror = () => reject(new Error('Não foi possível carregar o player de áudio do YouTube.'));
+      script.onerror = () =>
+        reject(new Error('Não foi possível carregar o player de áudio do YouTube.'));
       document.head.appendChild(script);
     }
 
@@ -118,7 +119,6 @@ export function extractYouTubeIdFromUrl(url: string): string | null {
 function muffleToFrequency(mufflePct: number): number {
   const pct = Math.max(0, Math.min(100, mufflePct));
   if (pct <= 0) return 22000;
-  // Logarithmic sweep from 20000 Hz (clear) down to 240 Hz (muffled behind wall / underwater)
   return Math.round(20000 * Math.pow(240 / 20000, pct / 100));
 }
 
@@ -153,6 +153,8 @@ interface ActiveMediaNode {
   source: MediaElementAudioSourceNode | null;
   dsp: AudioDspSettings;
   supportsFullDsp: boolean;
+  currentVol: number;
+  fadeTimerId?: number;
 }
 
 interface ActiveYouTubeNode {
@@ -161,6 +163,8 @@ interface ActiveYouTubeNode {
   hostEl: HTMLDivElement;
   dsp: AudioDspSettings;
   ready: boolean;
+  currentVol: number;
+  fadeTimerId?: number;
 }
 
 type LayerNode = ActiveMediaNode | ActiveYouTubeNode;
@@ -178,8 +182,11 @@ class VttAudioEngine {
     music: null,
     ambience: null,
   };
+  private pausedLayers: Record<'music' | 'ambience', boolean> = {
+    music: false,
+    ambience: false,
+  };
   private activeSfx = new Set<LayerNode>();
-  private fadeTimers = new Map<'music' | 'ambience', number>();
 
   private activeMusicTrackId: string | null = null;
   private activeAmbienceTrackId: string | null = null;
@@ -187,7 +194,9 @@ class VttAudioEngine {
   private ensureAudioContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
     if (!this.audioCtx) {
-      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const Ctx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (Ctx) {
         this.audioCtx = new Ctx();
       }
@@ -206,15 +215,19 @@ class VttAudioEngine {
     return {
       musicId: this.activeMusicTrackId,
       ambienceId: this.activeAmbienceTrackId,
+      musicPaused: this.pausedLayers.music,
+      ambiencePaused: this.pausedLayers.ambience,
     };
   }
 
-  private clearFade(layer: 'music' | 'ambience') {
-    const id = this.fadeTimers.get(layer);
-    if (typeof id === 'number') {
-      window.clearInterval(id);
-      this.fadeTimers.delete(layer);
-    }
+  public isLayerPaused(layer: 'music' | 'ambience'): boolean {
+    return this.pausedLayers[layer];
+  }
+
+  private clearNodeFade(node: LayerNode | null) {
+    if (!node || typeof node.fadeTimerId !== 'number') return;
+    window.clearInterval(node.fadeTimerId);
+    node.fadeTimerId = undefined;
   }
 
   private effectiveVolume(layer: AudioLayer): number {
@@ -232,8 +245,9 @@ class VttAudioEngine {
     this.applyVolumes();
   }
 
-  private setNodeVolume(node: LayerNode, vol: number) {
+  private setNodeVolumeImmediate(node: LayerNode, vol: number) {
     const clamped = Math.max(0, Math.min(1, vol));
+    node.currentVol = clamped;
     if (node.kind === 'youtube') {
       if (node.ready) {
         try {
@@ -245,27 +259,68 @@ class VttAudioEngine {
       return;
     }
     if (node.gain && this.audioCtx) {
-      node.gain.gain.setTargetAtTime(clamped, this.audioCtx.currentTime, 0.03);
+      node.gain.gain.setTargetAtTime(clamped, this.audioCtx.currentTime, 0.025);
       node.el.volume = 1;
     } else {
       node.el.volume = clamped;
     }
   }
 
-  private applyVolumes() {
-    if (this.layers.music) {
-      this.setNodeVolume(this.layers.music, this.effectiveVolume('music'));
+  /**
+   * Smoothly interpolates a node's volume from its current level to targetVol
+   * for subtle, musical fade-in and fade-out transitions on Play, Pause, and Stop.
+   */
+  private fadeNodeTo(
+    node: LayerNode,
+    targetVol: number,
+    durationMs: number,
+    onDone?: () => void
+  ) {
+    this.clearNodeFade(node);
+    const startVol = Number.isFinite(node.currentVol) ? node.currentVol : 0;
+    const goal = Math.max(0, Math.min(1, targetVol));
+
+    if (durationMs <= 16 || Math.abs(goal - startVol) < 0.008) {
+      this.setNodeVolumeImmediate(node, goal);
+      onDone?.();
+      return;
     }
-    if (this.layers.ambience) {
-      this.setNodeVolume(this.layers.ambience, this.effectiveVolume('ambience'));
+
+    const steps = Math.max(8, Math.min(28, Math.round(durationMs / 24)));
+    const stepMs = Math.max(16, Math.round(durationMs / steps));
+    let step = 0;
+
+    node.fadeTimerId = window.setInterval(() => {
+      step += 1;
+      const t = Math.min(1, step / steps);
+      // Smooth ease-in-out curve for natural auditory fade
+      const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+      const nextVol = startVol + (goal - startVol) * eased;
+      this.setNodeVolumeImmediate(node, nextVol);
+
+      if (t >= 1) {
+        this.clearNodeFade(node);
+        this.setNodeVolumeImmediate(node, goal);
+        onDone?.();
+      }
+    }, stepMs);
+  }
+
+  private applyVolumes() {
+    if (this.layers.music && !this.pausedLayers.music) {
+      this.fadeNodeTo(this.layers.music, this.effectiveVolume('music'), 180);
+    }
+    if (this.layers.ambience && !this.pausedLayers.ambience) {
+      this.fadeNodeTo(this.layers.ambience, this.effectiveVolume('ambience'), 180);
     }
     for (const sfx of this.activeSfx) {
-      this.setNodeVolume(sfx, this.effectiveVolume('sfx'));
+      this.setNodeVolumeImmediate(sfx, this.effectiveVolume('sfx'));
     }
   }
 
   private destroyNode(node: LayerNode | null) {
     if (!node) return;
+    this.clearNodeFade(node);
     if (node.kind === 'youtube') {
       try {
         node.player.stopVideo();
@@ -289,24 +344,102 @@ class VttAudioEngine {
     }
   }
 
-  public stopLayer(layer: 'music' | 'ambience') {
-    this.clearFade(layer);
-    this.destroyNode(this.layers[layer]);
+  /**
+   * Pauses a layer with a subtle fade-out (~440ms) before pausing playback.
+   */
+  public pauseLayer(layer: 'music' | 'ambience', fadeMs = 440) {
+    const node = this.layers[layer];
+    if (!node || this.pausedLayers[layer]) return;
+    this.pausedLayers[layer] = true;
+
+    this.fadeNodeTo(node, 0, fadeMs, () => {
+      if (this.layers[layer] !== node || !this.pausedLayers[layer]) return;
+      if (node.kind === 'youtube') {
+        if (node.ready) {
+          try {
+            node.player.pauseVideo();
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        try {
+          node.el.pause();
+        } catch {
+          // ignore
+        }
+      }
+    });
+  }
+
+  /**
+   * Resumes a paused layer with a subtle fade-in (~540ms).
+   */
+  public resumeLayer(layer: 'music' | 'ambience', fadeMs = 540) {
+    const node = this.layers[layer];
+    if (!node || !this.pausedLayers[layer]) return;
+    this.pausedLayers[layer] = false;
+
+    this.setNodeVolumeImmediate(node, 0.01);
+    if (node.kind === 'youtube') {
+      if (node.ready) {
+        try {
+          node.player.playVideo();
+        } catch {
+          // ignore
+        }
+      }
+    } else {
+      void node.el.play().catch(() => {});
+    }
+
+    this.fadeNodeTo(node, this.effectiveVolume(layer), fadeMs);
+  }
+
+  public togglePauseLayer(layer: 'music' | 'ambience') {
+    if (this.pausedLayers[layer]) {
+      this.resumeLayer(layer);
+    } else {
+      this.pauseLayer(layer);
+    }
+  }
+
+  /**
+   * Stops a layer with a subtle fade-out (~480ms) before releasing resources.
+   * Detaches the node immediately so a new track can crossfade in concurrently.
+   */
+  public stopLayer(layer: 'music' | 'ambience', fadeMs = 480) {
+    const oldNode = this.layers[layer];
     this.layers[layer] = null;
+    this.pausedLayers[layer] = false;
+
     if (layer === 'music') {
       this.activeMusicTrackId = null;
     } else {
       this.activeAmbienceTrackId = null;
     }
+
+    if (!oldNode) return;
+    if (fadeMs <= 0) {
+      this.destroyNode(oldNode);
+      return;
+    }
+
+    this.fadeNodeTo(oldNode, 0, fadeMs, () => {
+      this.destroyNode(oldNode);
+    });
   }
 
-  public stopAll() {
-    this.stopLayer('music');
-    this.stopLayer('ambience');
-    for (const sfx of this.activeSfx) {
-      this.destroyNode(sfx);
-    }
+  public stopAll(fadeMs = 460) {
+    this.stopLayer('music', fadeMs);
+    this.stopLayer('ambience', fadeMs);
+    const sfxNodes = Array.from(this.activeSfx);
     this.activeSfx.clear();
+    for (const sfx of sfxNodes) {
+      this.fadeNodeTo(sfx, 0, Math.min(320, fadeMs), () => {
+        this.destroyNode(sfx);
+      });
+    }
   }
 
   public updateLiveDsp(layer: 'music' | 'ambience', dsp: AudioDspSettings) {
@@ -382,40 +515,14 @@ class VttAudioEngine {
     };
   }
 
-  private fadeInNode(node: LayerNode, layer: 'music' | 'ambience', durationMs = 420) {
-    this.clearFade(layer);
-    const target = this.effectiveVolume(layer);
-    if (target <= 0 || durationMs <= 0) {
-      this.setNodeVolume(node, target);
-      return;
-    }
-    this.setNodeVolume(node, 0.01);
-    const steps = 14;
-    const stepMs = Math.max(16, Math.round(durationMs / steps));
-    let step = 0;
-    const timer = window.setInterval(() => {
-      step += 1;
-      const goal = this.effectiveVolume(layer);
-      const ratio = Math.min(1, step / steps);
-      this.setNodeVolume(node, goal * ratio);
-      if (ratio >= 1) {
-        this.clearFade(layer);
-      }
-    }, stepMs);
-    this.fadeTimers.set(layer, timer);
-  }
-
   private createMediaNode(
     resolvedUrl: string,
     dsp: AudioDspSettings,
     loop: boolean,
     allowCorsDsp: boolean
   ): ActiveMediaNode {
-    // Use <video> element when URL is an external video file so audio plays seamlessly with zero video rendered
     const isVideoSrc = /\.(mp4|webm|mov|m4v|ogv)(\?|$)/i.test(resolvedUrl);
-    const el: HTMLMediaElement = isVideoSrc
-      ? document.createElement('video')
-      : new Audio();
+    const el: HTMLMediaElement = isVideoSrc ? document.createElement('video') : new Audio();
 
     if (allowCorsDsp && !resolvedUrl.startsWith('blob:')) {
       el.crossOrigin = 'anonymous';
@@ -460,6 +567,7 @@ class VttAudioEngine {
       source,
       dsp: { ...dsp },
       supportsFullDsp,
+      currentVol: 0,
     };
   }
 
@@ -491,13 +599,15 @@ class VttAudioEngine {
       hostEl,
       dsp: { ...dsp },
       ready: false,
+      currentVol: 0,
     };
 
     if (track.layer === 'sfx') {
       this.activeSfx.add(node);
     } else {
-      this.stopLayer(track.layer);
+      this.stopLayer(track.layer, 480);
       this.layers[track.layer] = node;
+      this.pausedLayers[track.layer] = false;
       if (track.layer === 'music') this.activeMusicTrackId = track.id;
       else this.activeAmbienceTrackId = track.id;
     }
@@ -528,7 +638,8 @@ class VttAudioEngine {
           onReady: (ev) => {
             node.ready = true;
             try {
-              ev.target.setVolume(Math.round(this.effectiveVolume(track.layer) * 100));
+              // Start at volume 0 and smoothly fade in
+              ev.target.setVolume(0);
               if (dsp.speed && dsp.speed !== 1) {
                 ev.target.setPlaybackRate(Math.max(0.5, Math.min(2, dsp.speed)));
               }
@@ -536,13 +647,17 @@ class VttAudioEngine {
                 ev.target.seekTo(startSec, true);
               }
               ev.target.playVideo();
+              this.fadeNodeTo(
+                node,
+                this.effectiveVolume(track.layer),
+                track.layer === 'sfx' ? 140 : 620
+              );
             } catch {
               // ignore
             }
             done();
           },
           onStateChange: (ev) => {
-            // 0 === YT.PlayerState.ENDED
             if (ev.data === 0) {
               if (isLoop) {
                 ev.target.seekTo(Math.max(0, node.dsp.startSec || 0), true);
@@ -608,7 +723,7 @@ class VttAudioEngine {
       }
 
       if (track.layer === 'sfx') {
-        this.setNodeVolume(node, this.effectiveVolume('sfx'));
+        this.setNodeVolumeImmediate(node, 0.02);
         this.activeSfx.add(node);
         const cleanup = () => {
           this.activeSfx.delete(node);
@@ -620,26 +735,29 @@ class VttAudioEngine {
         if (dsp.startSec > 0 && node.el.readyState >= 1) {
           node.el.currentTime = dsp.startSec;
         }
+        this.fadeNodeTo(node, this.effectiveVolume('sfx'), 140);
         return;
       }
 
       const layer: 'music' | 'ambience' = track.layer;
-      this.stopLayer(layer);
+      // Smoothly crossfade out any previous track on this layer
+      this.stopLayer(layer, 480);
       this.layers[layer] = node;
+      this.pausedLayers[layer] = false;
       if (layer === 'music') this.activeMusicTrackId = track.id;
       else this.activeAmbienceTrackId = track.id;
 
+      this.setNodeVolumeImmediate(node, 0.01);
       await node.el.play();
       if (dsp.startSec > 0 && node.el.readyState >= 1) {
         node.el.currentTime = dsp.startSec;
       }
-      this.fadeInNode(node, layer, 420);
+      this.fadeNodeTo(node, this.effectiveVolume(layer), 620);
     };
 
     try {
       await tryPlay(true);
     } catch (err) {
-      // If an external third-party URL fails due to missing CORS headers, fall back cleanly without Web Audio CORS
       if (!isSameOriginOrBlob) {
         await tryPlay(false);
       } else {

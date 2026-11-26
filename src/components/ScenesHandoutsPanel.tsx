@@ -18,6 +18,7 @@ import {
   Plus,
   Send,
   SlidersHorizontal,
+  Swords,
   Trash2,
   Type,
   Unlock,
@@ -31,10 +32,12 @@ import type {
   AudioTrack,
   CampaignMember,
   CharacterSheet,
+  DuelArenaPresetId,
   Handout,
   HandoutKind,
   Scene,
   SceneCategory,
+  SceneDuelConfig,
   SceneMediaKind,
   SceneToken,
 } from '../types/vtt';
@@ -44,6 +47,7 @@ import {
   type CampaignUploadContext,
 } from '../lib/mediaStore';
 import { detectSceneMediaKind, type MediaOptimizeProfile } from '../lib/mediaOptimizer';
+import { DUEL_ARENA_PRESETS } from '../lib/duelEngine';
 import type { VaultAssetItem } from '../lib/assetVault';
 import { TokenEditorPanel, TOKEN_SWATCH_COLORS } from './TokenEditorPanel';
 
@@ -51,6 +55,7 @@ interface ScenesHandoutsPanelProps {
   uploadContext: CampaignUploadContext;
   scenes: Scene[];
   activeScene: Scene | null;
+  activeSceneDuelConfig?: SceneDuelConfig;
   handouts: Handout[];
   activeHandout: ActiveHandoutProjection | null;
   audioTracks: AudioTrack[];
@@ -68,6 +73,7 @@ interface ScenesHandoutsPanelProps {
     linkedAmbienceId: string;
   }) => Promise<void>;
   onUpdateSceneAudio: (scene: Scene, musicId: string, ambienceId: string) => Promise<void>;
+  onUpdateSceneDuelConfig?: (config: SceneDuelConfig) => void;
   onDeleteScene: (sceneId: string) => Promise<void>;
   onAddTokenToScene: (token: SceneToken) => Promise<void>;
   onUpdateSceneTokens: (tokens: SceneToken[]) => Promise<void>;
@@ -205,6 +211,7 @@ export function ScenesHandoutsPanel({
   uploadContext,
   scenes,
   activeScene,
+  activeSceneDuelConfig,
   handouts,
   activeHandout,
   audioTracks,
@@ -214,6 +221,7 @@ export function ScenesHandoutsPanel({
   onSelectScene,
   onCreateScene,
   onUpdateSceneAudio,
+  onUpdateSceneDuelConfig,
   onDeleteScene,
   onAddTokenToScene,
   onUpdateSceneTokens,
@@ -290,7 +298,8 @@ export function ScenesHandoutsPanel({
     };
   }, [vaultAssets, uploadContext.campaignId]);
 
-  const musicTracks = audioTracks.filter((t) => t.layer === 'music');
+  const musicTracks = audioTracks.filter((t) => t.layer === 'music' && t.synthPreset !== 'duel');
+  const duelMusicTracks = audioTracks.filter((t) => t.layer === 'music' && t.synthPreset === 'duel');
   const ambienceTracks = audioTracks.filter((t) => t.layer === 'ambience');
   const players = members.filter((m) => m.role === 'player');
 
@@ -755,6 +764,113 @@ export function ScenesHandoutsPanel({
                     </select>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Per-Scene Specific 3D Duel Mode Background & Audio Config */}
+            {activeScene && activeSceneDuelConfig && onUpdateSceneDuelConfig && (
+              <div className="border vtt-border p-3.5 space-y-2.5 vtt-canvas">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-semibold flex items-center gap-1.5">
+                    <Swords className="w-3.5 h-3.5 vtt-accent-text" />
+                    Fundo 3D de Modo Duelo desta Cena
+                  </p>
+                  <label className="px-2 py-1 text-[11px] font-semibold vtt-accent-btn cursor-pointer flex items-center gap-1">
+                    <Upload className="w-3 h-3" />
+                    <span>{uploading ? `${uploadPct}%` : 'Enviar Fundo 3D'}</span>
+                    <input
+                      type="file"
+                      accept="image/*,video/mp4,video/webm"
+                      className="hidden"
+                      disabled={uploading}
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        e.target.value = '';
+                        void handleFileUpload(f, 'scene', (res) => {
+                          onUpdateSceneDuelConfig({
+                            ...activeSceneDuelConfig,
+                            bgUrl: res.url,
+                            bgMediaId: res.mediaId,
+                            bgMediaKind: res.mediaKind,
+                          });
+                        });
+                      }}
+                    />
+                  </label>
+                </div>
+
+                <p className="text-[11px] vtt-muted leading-snug">
+                  Cada cena pode ter seu próprio cenário 3D e música específica quando você selecionar 2 tokens para Duelo.
+                </p>
+
+                <input
+                  type="text"
+                  value={
+                    activeSceneDuelConfig.bgUrl.startsWith('idb://')
+                      ? ''
+                      : activeSceneDuelConfig.bgUrl
+                  }
+                  onChange={(e) =>
+                    onUpdateSceneDuelConfig({
+                      ...activeSceneDuelConfig,
+                      bgUrl: e.target.value,
+                      bgMediaId: '',
+                      bgMediaKind: detectSceneMediaKind(e.target.value),
+                    })
+                  }
+                  placeholder="Ou cole link https:// da imagem/vídeo para o Duelo 3D..."
+                  className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface"
+                />
+
+                <div className="grid grid-cols-1 gap-2">
+                  <select
+                    value={activeSceneDuelConfig.arenaPreset}
+                    onChange={(e) =>
+                      onUpdateSceneDuelConfig({
+                        ...activeSceneDuelConfig,
+                        arenaPreset: e.target.value as DuelArenaPresetId,
+                      })
+                    }
+                    className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface"
+                  >
+                    {DUEL_ARENA_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        Arena 3D: {p.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={activeSceneDuelConfig.musicTrackId}
+                    onChange={(e) =>
+                      onUpdateSceneDuelConfig({
+                        ...activeSceneDuelConfig,
+                        musicTrackId: e.target.value,
+                      })
+                    }
+                    className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface"
+                  >
+                    <option value="">Música de Duelo: Padrão / Manter</option>
+                    {duelMusicTracks.length > 0 && (
+                      <optgroup label="⚔️ Músicas de Modo Duelo">
+                        {duelMusicTracks.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {musicTracks.length > 0 && (
+                      <optgroup label="🎵 Músicas de Fundo">
+                        {musicTracks.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                </div>
               </div>
             )}
           </>
