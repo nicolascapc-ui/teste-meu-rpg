@@ -179,10 +179,13 @@ export function DuelSetupModal({
   );
   const [uploadingBg, setUploadingBg] = useState(false);
 
-  // Custom Attack SFX map (Corte, Impacto, Tiro, Magia)
-  const [attackSfxMap, setAttackSfxMap] = useState<DuelAttackSfxMap>(
-    () => initialConfig.attackSfxMap || loadCampaignAttackSfx(uploadContext.campaignId)
-  );
+  // Custom Attack SFX map (Corte, Impacto, Tiro, Magia) — campaign storage is authoritative so re-entering a duel never wipes custom uploads
+  const [attackSfxMap, setAttackSfxMap] = useState<DuelAttackSfxMap>(() => {
+    const savedCampaign = loadCampaignAttackSfx(uploadContext.campaignId);
+    return Object.keys(savedCampaign).length > 0
+      ? savedCampaign
+      : initialConfig.attackSfxMap || {};
+  });
   const [showAttackSfxConfig, setShowAttackSfxConfig] = useState(false);
   const [uploadingSfxKey, setUploadingSfxKey] = useState<string | null>(null);
 
@@ -2506,8 +2509,10 @@ export function DuelArena3DOverlay({
         ? 'cursor-crosshair'
         : 'cursor-pointer';
 
-  const currentAttackSfxMap =
-    renderedDuel.attackSfxMap || loadCampaignAttackSfx(campaignId);
+  const currentAttackSfxMap: DuelAttackSfxMap = {
+    ...loadCampaignAttackSfx(campaignId),
+    ...(renderedDuel.attackSfxMap || {}),
+  };
 
   // Seamless zoom transition scale & opacity when turning Duel Mode ON or OFF
   const transitionStageScale =

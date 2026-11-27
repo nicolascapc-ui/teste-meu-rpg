@@ -1,6 +1,10 @@
 import { audioEngine } from './audioEngine';
 import { buildAutoItemFormula } from './diceEngine';
 import { resolveMediaUrl } from './mediaStore';
+import bladeDefaultSfxUrl from '../assets/sfx/blade.mp3';
+import magicDefaultSfxUrl from '../assets/sfx/magic.mp3';
+import shotDefaultSfxUrl from '../assets/sfx/shot.mp3';
+import punchDefaultSfxUrl from '../assets/sfx/punch.mp3';
 import type {
   ActiveDuelState,
   CharacterSheet,
@@ -423,20 +427,22 @@ export function saveActionCustomSfx(
 }
 
 export function loadSceneDuelConfig(campaignId: string, scene: Scene | null): SceneDuelConfig {
+  const campaignSfx = loadCampaignAttackSfx(campaignId);
   const fallback: SceneDuelConfig = {
     bgUrl: scene?.imageUrl || '',
     bgMediaId: scene?.mediaId || '',
     bgMediaKind: scene?.mediaKind || 'image',
     arenaPreset: 'expedition_ruins',
     customArenaStyle: null,
-    musicTrackId: scene?.linkedMusicId || '',
-    attackSfxMap: loadCampaignAttackSfx(campaignId),
+    musicTrackId: '',
+    attackSfxMap: campaignSfx,
   };
   if (!scene || typeof window === 'undefined') return fallback;
   try {
     const raw = window.localStorage.getItem(`${DUEL_CFG_STORAGE_PREFIX}_${campaignId}_${scene.id}`);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw) as Partial<SceneDuelConfig>;
+    const hasCampaignSfx = Object.keys(campaignSfx).length > 0;
     return {
       bgUrl: typeof parsed.bgUrl === 'string' ? parsed.bgUrl : fallback.bgUrl,
       bgMediaId: typeof parsed.bgMediaId === 'string' ? parsed.bgMediaId : fallback.bgMediaId,
@@ -445,7 +451,7 @@ export function loadSceneDuelConfig(campaignId: string, scene: Scene | null): Sc
       customArenaStyle: parsed.customArenaStyle || null,
       musicTrackId:
         typeof parsed.musicTrackId === 'string' ? parsed.musicTrackId : fallback.musicTrackId,
-      attackSfxMap: parsed.attackSfxMap || fallback.attackSfxMap,
+      attackSfxMap: hasCampaignSfx ? campaignSfx : parsed.attackSfxMap || {},
     };
   } catch {
     return fallback;
@@ -744,31 +750,15 @@ export function buildCombatantFromTokenAndSheets(
 }
 
 // -----------------------------------------------------------------------------
-// Zero-Dependency Procedural Web Audio Combat SFX (Fruit Ninja Blade, Blunt Hit, Shot, Arcane)
+// Bundled Default Combat MP3 SFX (Vite-resolved so it works on Cloud Run & GitHub Pages!)
 // -----------------------------------------------------------------------------
-let sfxCtx: AudioContext | null = null;
-
-function getSfxContext(): AudioContext | null {
-  if (typeof window === 'undefined') return null;
-  if (!sfxCtx) {
-    const Ctx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (Ctx) sfxCtx = new Ctx();
-  }
-  if (sfxCtx && sfxCtx.state === 'suspended') {
-    void sfxCtx.resume().catch(() => {});
-  }
-  return sfxCtx;
-}
-
 export const DEFAULT_DUEL_SFX_URLS: Partial<
   Record<'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield', string>
 > = {
-  blade: '/assets/aistudio/fruit_ninja_slicing_fruit_sound_effect_4__mp3cut.net__d36c150f.mp3',
-  arcane: '/assets/aistudio/magic_spell_hit_-_sound_effect__mp3cut.net__d31a681a.mp3',
-  shot: '/assets/aistudio/Desert_Eagle_Single_Shot_Gunshot_Sound_Effect_4__mp3cut.net__fef90a08.mp3',
-  blunt: '/assets/aistudio/More_Punch_Sound_Effects__mp3cut.net__f1610e00.mp3',
+  blade: bladeDefaultSfxUrl,
+  arcane: magicDefaultSfxUrl,
+  shot: shotDefaultSfxUrl,
+  blunt: punchDefaultSfxUrl,
 };
 
 const defaultSfxAudioCache = new Map<string, HTMLAudioElement>();
@@ -779,19 +769,16 @@ function getSfxEffectiveVolume(): number {
   return Math.max(0, Math.min(1, vols.master * vols.sfx));
 }
 
-function playOneShotAudioUrl(
-  url: string,
-  fallbackKind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield'
-) {
+function playOneShotAudioUrl(url: string) {
   const volume = getSfxEffectiveVolume();
-  if (volume <= 0.001) return;
+  if (volume <= 0.001 || !url) return;
 
   try {
     let base = defaultSfxAudioCache.get(url);
     if (!base) {
       base = new Audio(url);
       base.preload = 'auto';
-      if (!url.startsWith('/')) {
+      if (/^https?:\/\//i.test(url)) {
         base.crossOrigin = 'anonymous';
       }
       defaultSfxAudioCache.set(url, base);
@@ -800,10 +787,10 @@ function playOneShotAudioUrl(
     instance.volume = volume;
     instance.currentTime = 0;
     void instance.play().catch(() => {
-      playProceduralCombatSfx(fallbackKind);
+      // Never fall back to synthetic oscillator audio
     });
   } catch {
-    playProceduralCombatSfx(fallbackKind);
+    // Ignore browser autoplay restrictions silently
   }
 }
 
@@ -814,178 +801,35 @@ export function playCombatCursorSfx(
   const volume = getSfxEffectiveVolume();
   if (volume <= 0.001) return;
 
+  const playDefaultClip = () => {
+    const defaultUrl = DEFAULT_DUEL_SFX_URLS[kind];
+    if (defaultUrl) {
+      playOneShotAudioUrl(defaultUrl);
+    }
+  };
+
   if (customSfx && (customSfx.url || customSfx.mediaId)) {
     void resolveMediaUrl(customSfx.mediaId, customSfx.url || '', customSfx.campaignId)
       .then((resolved) => {
         if (!resolved) {
-          const defaultUrl = DEFAULT_DUEL_SFX_URLS[kind];
-          if (defaultUrl) {
-            playOneShotAudioUrl(defaultUrl, kind);
-          } else {
-            playProceduralCombatSfx(kind);
-          }
+          playDefaultClip();
           return;
         }
         const audio = new Audio();
-        if (!resolved.startsWith('/')) {
+        if (/^https?:\/\//i.test(resolved)) {
           audio.crossOrigin = 'anonymous';
         }
         audio.src = resolved;
         audio.volume = volume;
         void audio.play().catch(() => {
-          const defaultUrl = DEFAULT_DUEL_SFX_URLS[kind];
-          if (defaultUrl) {
-            playOneShotAudioUrl(defaultUrl, kind);
-          } else {
-            playProceduralCombatSfx(kind);
-          }
+          playDefaultClip();
         });
       })
       .catch(() => {
-        const defaultUrl = DEFAULT_DUEL_SFX_URLS[kind];
-        if (defaultUrl) {
-          playOneShotAudioUrl(defaultUrl, kind);
-        } else {
-          playProceduralCombatSfx(kind);
-        }
+        playDefaultClip();
       });
     return;
   }
 
-  const defaultUrl = DEFAULT_DUEL_SFX_URLS[kind];
-  if (defaultUrl) {
-    playOneShotAudioUrl(defaultUrl, kind);
-    return;
-  }
-
-  playProceduralCombatSfx(kind);
-}
-
-function playProceduralCombatSfx(
-  kind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield'
-) {
-  const ctx = getSfxContext();
-  if (!ctx) return;
-  const now = ctx.currentTime;
-
-  try {
-    if (kind === 'blade') {
-      // Metallic katana swoosh + razor ring
-      const bufferSize = Math.floor(ctx.sampleRate * 0.22);
-      const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-      const out = noiseBuffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) {
-        out[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 1.8);
-      }
-      const noise = ctx.createBufferSource();
-      noise.buffer = noiseBuffer;
-
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'bandpass';
-      filter.Q.setValueAtTime(3.2, now);
-      filter.frequency.setValueAtTime(900, now);
-      filter.frequency.exponentialRampToValueAtTime(3800, now + 0.14);
-
-      const gain = ctx.createGain();
-      gain.gain.setValueAtTime(0.32, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
-
-      noise.connect(filter);
-      filter.connect(gain);
-      gain.connect(ctx.destination);
-      noise.start(now);
-
-      // Subtle steel harmonic ping
-      const osc = ctx.createOscillator();
-      const oscGain = ctx.createGain();
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(2450, now);
-      osc.frequency.exponentialRampToValueAtTime(1120, now + 0.18);
-      oscGain.gain.setValueAtTime(0.14, now);
-      oscGain.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
-      osc.connect(oscGain);
-      oscGain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.2);
-      return;
-    }
-
-    if (kind === 'blunt') {
-      // Heavy low-end punch impact ("Porrada")
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(155, now);
-      osc.frequency.exponentialRampToValueAtTime(34, now + 0.24);
-      gain.gain.setValueAtTime(0.55, now);
-      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.26);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start(now);
-      osc.stop(now + 0.27);
-
-      // Impact crunch transient
-      const bufLen = Math.floor(ctx.sampleRate * 0.12);
-      const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
-      const data = buf.getChannelData(0);
-      for (let i = 0; i < bufLen; i++) {
-        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufLen, 2.5);
-      }
-      const noise = ctx.createBufferSource();
-      noise.buffer = buf;
-      const lp = ctx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(640, now);
-      const nGain = ctx.createGain();
-      nGain.gain.setValueAtTime(0.35, now);
-      nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
-      noise.connect(lp);
-      lp.connect(nGain);
-      nGain.connect(ctx.destination);
-      noise.start(now);
-      return;
-    }
-
-    if (kind === 'shot') {
-      // Sharp crack + ricochet
-      const bufLen = Math.floor(ctx.sampleRate * 0.18);
-      const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
-      const data = buf.getChannelData(0);
-      for (let i = 0; i < bufLen; i++) {
-        data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufLen, 3.2);
-      }
-      const noise = ctx.createBufferSource();
-      noise.buffer = buf;
-      const nGain = ctx.createGain();
-      nGain.gain.setValueAtTime(0.45, now);
-      nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
-      noise.connect(nGain);
-      nGain.connect(ctx.destination);
-      noise.start(now);
-      return;
-    }
-
-    if (kind === 'arcane' || kind === 'heal' || kind === 'shield') {
-      // Shimmering chord pulse
-      const freqs = kind === 'heal' ? [523.25, 659.25, 783.99] : [220, 329.63, 493.88];
-      freqs.forEach((f, idx) => {
-        const osc = ctx.createOscillator();
-        const g = ctx.createGain();
-        osc.type = kind === 'arcane' ? 'sawtooth' : 'sine';
-        osc.frequency.setValueAtTime(f, now + idx * 0.03);
-        osc.frequency.exponentialRampToValueAtTime(
-          kind === 'arcane' ? f * 0.72 : f * 1.15,
-          now + 0.35
-        );
-        g.gain.setValueAtTime(0.11, now + idx * 0.03);
-        g.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
-        osc.connect(g);
-        g.connect(ctx.destination);
-        osc.start(now + idx * 0.03);
-        osc.stop(now + 0.4);
-      });
-    }
-  } catch {
-    // Ignore audio context restrictions
-  }
+  playDefaultClip();
 }

@@ -244,6 +244,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     musicTrackId: '',
   });
   const preDuelMusicIdRef = useRef<string | null>(null);
+  const preDuelAmbienceIdRef = useRef<string | null>(null);
 
   // Undo / Redo History Stacks (Ctrl+Z / Ctrl+Y)
   const [undoStack, setUndoStack] = useState<SceneHistorySnapshot[]>([]);
@@ -1284,24 +1285,39 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       [activeScene.id]: scopedDuel,
     }));
 
-    // Remember current music track and smoothly crossfade into Duel Music ONLY if scene/combat auto-play is ON
-    preDuelMusicIdRef.current = audioEngine.getActiveTrackIds().musicId;
-    if (audioEngine.isAutoPlayEnabled()) {
-      const targetMusicId =
+    // Pause/stop the scene's music & ambience and give full stage to the duel music (synced live to players/TV!)
+    if (activeScene.id === campaign.activeSceneId) {
+      const activeBefore = audioEngine.getActiveTrackIds();
+      preDuelMusicIdRef.current = activeBefore.musicId || activeScene.linkedMusicId || null;
+      preDuelAmbienceIdRef.current =
+        activeBefore.ambienceId || activeScene.linkedAmbienceId || null;
+
+      // Silence scene ambience during combat so it never clashes with the duel theme
+      if (activeBefore.ambienceId) {
+        audioEngine.stopLayer('ambience', 450);
+      }
+
+      const targetDuelMusicId =
         scopedDuel.musicTrackId ||
         audioTracks.find((t) => t.layer === 'music' && t.synthPreset === 'duel')?.id ||
         '';
-      if (targetMusicId) {
-        const mTrack = audioTracks.find((t) => t.id === targetMusicId);
-        if (mTrack && audioEngine.getActiveTrackIds().musicId !== mTrack.id) {
+      const duelMusicTrack = targetDuelMusicId
+        ? audioTracks.find((t) => t.id === targetDuelMusicId) || null
+        : null;
+
+      if (duelMusicTrack) {
+        if (activeBefore.musicId !== duelMusicTrack.id) {
           try {
-            await audioEngine.playTrack(mTrack, campaign.id);
-            setAudioIds(audioEngine.getActiveTrackIds());
+            await audioEngine.playTrack(duelMusicTrack, campaign.id);
           } catch {
             // Ignore autoplay restriction silently
           }
         }
+      } else if (activeBefore.musicId) {
+        // No duel track picked yet: stop the calm scene music cleanly when entering combat
+        audioEngine.stopLayer('music', 450);
       }
+      setAudioIds(audioEngine.getActiveTrackIds());
     }
 
     if (activeScene.id === campaign.activeSceneId) {
@@ -1437,25 +1453,39 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       }
     }
 
-    // Smoothly fade back to pre-duel music or stop duel music ONLY when auto-play is ON
-    if (audioEngine.isAutoPlayEnabled()) {
-      const restoreId = preDuelMusicIdRef.current || targetScene.linkedMusicId || null;
+    // Stop duel music and smoothly restore the scene's previous music & ambience when combat ends!
+    if (targetScene.id === campaign.activeSceneId) {
+      const restoreMusicId = preDuelMusicIdRef.current || targetScene.linkedMusicId || null;
+      const restoreAmbienceId =
+        preDuelAmbienceIdRef.current || targetScene.linkedAmbienceId || null;
+      const currentActive = audioEngine.getActiveTrackIds();
+
       try {
-        if (restoreId) {
-          const prevTrack = audioTracks.find((t) => t.id === restoreId);
-          if (prevTrack && audioEngine.getActiveTrackIds().musicId !== prevTrack.id) {
-            await audioEngine.playTrack(prevTrack, campaign.id);
+        if (restoreMusicId) {
+          const prevMusicTrack = audioTracks.find((t) => t.id === restoreMusicId);
+          if (prevMusicTrack) {
+            if (currentActive.musicId !== prevMusicTrack.id) {
+              await audioEngine.playTrack(prevMusicTrack, campaign.id);
+            }
+          } else if (currentActive.musicId) {
+            audioEngine.stopLayer('music', 500);
           }
-        } else if (audioEngine.getActiveTrackIds().musicId) {
-          const currentTrack = audioTracks.find(
-            (t) => t.id === audioEngine.getActiveTrackIds().musicId
-          );
-          if (currentTrack?.synthPreset === 'duel') {
-            audioEngine.stopLayer('music');
+        } else if (currentActive.musicId) {
+          // Scene had no music before duel -> stop the duel music
+          audioEngine.stopLayer('music', 500);
+        }
+
+        if (restoreAmbienceId) {
+          const prevAmbTrack = audioTracks.find((t) => t.id === restoreAmbienceId);
+          if (prevAmbTrack && audioEngine.getActiveTrackIds().ambienceId !== prevAmbTrack.id) {
+            await audioEngine.playTrack(prevAmbTrack, campaign.id);
           }
         }
       } catch {
-        // Ignore
+        // Ignore browser autoplay restrictions silently
+      } finally {
+        preDuelMusicIdRef.current = null;
+        preDuelAmbienceIdRef.current = null;
       }
     }
     setAudioIds(audioEngine.getActiveTrackIds());
