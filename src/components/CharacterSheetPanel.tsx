@@ -16,6 +16,7 @@ import {
   Loader2,
   Maximize2,
   Minus,
+  Monitor,
   Plus,
   SlidersHorizontal,
   Sparkles,
@@ -37,6 +38,7 @@ import { buildAutoItemFormula } from '../lib/diceEngine';
 export interface CreateSheetPayload {
   name: string;
   subtitle?: string;
+  bio?: string;
   systemName?: string;
   mode?: 'modular' | 'pdf';
   avatarUrl?: string;
@@ -51,6 +53,7 @@ interface CharacterSheetPanelProps {
   uploadContext: CampaignUploadContext;
   sheets: CharacterSheet[];
   canDragToCanvas?: boolean;
+  onProjectToTv?: (sheet: CharacterSheet) => void;
   onCreateSheet: (payload: CreateSheetPayload) => Promise<string>;
   onUpdateSheet: (sheet: CharacterSheet) => Promise<void>;
   onDeleteSheet: (sheetId: string) => Promise<void>;
@@ -177,6 +180,7 @@ export function CharacterSheetPanel({
   uploadContext,
   sheets,
   canDragToCanvas = false,
+  onProjectToTv,
   onCreateSheet,
   onUpdateSheet,
   onDeleteSheet,
@@ -186,6 +190,7 @@ export function CharacterSheetPanel({
   const [selectedId, setSelectedId] = useState<string>(sheets[0]?.id || '');
   const [showNewDrawer, setShowNewDrawer] = useState(false);
   const [showA4Modal, setShowA4Modal] = useState(false);
+  const [showBioEditor, setShowBioEditor] = useState(true);
 
   // Progressive disclosure: collapsible sub-sections & quick section visibility toggles
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
@@ -339,6 +344,7 @@ export function CharacterSheetPanel({
     const id = await onCreateSheet({
       name: `${activeSheet.name} (Cópia)`,
       subtitle: activeSheet.subtitle,
+      bio: activeSheet.bio || '',
       systemName: activeSheet.templateId || 'Sistema Livre',
       mode: 'modular',
       blocks: clonedBlocks,
@@ -1636,6 +1642,17 @@ export function CharacterSheetPanel({
             </option>
           ))}
         </select>
+        {activeSheet && onProjectToTv && (
+          <button
+            type="button"
+            onClick={() => onProjectToTv(activeSheet)}
+            className="px-2.5 py-2 text-xs font-semibold border vtt-border vtt-surface hover:vtt-canvas flex items-center gap-1 whitespace-nowrap shrink-0"
+            title="Apresentar personagem na TV com animação estilo JRPG"
+          >
+            <Monitor className="w-3.5 h-3.5 vtt-accent-text" />
+            <span>TV</span>
+          </button>
+        )}
         {activeSheet && (
           <button
             type="button"
@@ -1922,6 +1939,41 @@ export function CharacterSheetPanel({
               </button>
             </div>
 
+            {/* Character Bio (shown during JRPG TV Presentation) */}
+            <div className="border vtt-border vtt-canvas">
+              <button
+                type="button"
+                onClick={() => setShowBioEditor((v) => !v)}
+                className="w-full px-2.5 py-1.5 flex items-center justify-between gap-2 text-left"
+              >
+                <span className="text-[11px] font-semibold flex items-center gap-1.5">
+                  {showBioEditor ? (
+                    <ChevronDown className="w-3.5 h-3.5 vtt-accent-text shrink-0" />
+                  ) : (
+                    <ChevronRight className="w-3.5 h-3.5 vtt-accent-text shrink-0" />
+                  )}
+                  Bio do Personagem
+                </span>
+                <span className="text-[10px] vtt-muted tabular-nums">
+                  {(activeSheet.bio || '').length}/1200
+                </span>
+              </button>
+              {showBioEditor && (
+                <div className="px-2.5 pb-2.5">
+                  <textarea
+                    value={activeSheet.bio || ''}
+                    onChange={(e) =>
+                      patchSheet({ ...activeSheet, bio: e.target.value.slice(0, 1200) })
+                    }
+                    rows={3}
+                    maxLength={1200}
+                    placeholder="História, título ou frase marcante do personagem (aparece automaticamente na apresentação estilo JRPG na TV)..."
+                    className="w-full px-2.5 py-2 text-xs border vtt-border vtt-surface resize-y leading-relaxed"
+                  />
+                </div>
+              )}
+            </div>
+
             {/* Draggable Token Strip for GM to drag character straight onto the tabletop */}
             {canDragToCanvas && (
               <div
@@ -2037,7 +2089,27 @@ export function CharacterSheetPanel({
             </div>
 
             {/* A4 Sheet Body */}
-            <div className="flex-1 overflow-y-auto p-6 sm:p-8 vtt-canvas">
+            <div className="flex-1 overflow-y-auto p-6 sm:p-8 vtt-canvas space-y-5">
+              {/* Character Bio in A4 Full Paper View */}
+              <div className="border vtt-border vtt-surface p-4 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold font-typewriter">Biografia do Personagem</span>
+                  <span className="text-[11px] vtt-muted tabular-nums">
+                    {(activeSheet.bio || '').length}/1200
+                  </span>
+                </div>
+                <textarea
+                  value={activeSheet.bio || ''}
+                  onChange={(e) =>
+                    patchSheet({ ...activeSheet, bio: e.target.value.slice(0, 1200) })
+                  }
+                  rows={3}
+                  maxLength={1200}
+                  placeholder="História, origem, personalidade ou frase de destaque exibida na TV..."
+                  className="w-full px-3 py-2 text-xs sm:text-sm border vtt-border vtt-canvas resize-y leading-relaxed"
+                />
+              </div>
+
               {renderActiveSheetBody(true)}
             </div>
           </div>

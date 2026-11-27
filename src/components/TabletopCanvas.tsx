@@ -2821,6 +2821,16 @@ export function TabletopCanvas({
                     imageUrl: selectedToken.imageUrl || '',
                     mediaId: selectedToken.mediaId || '',
                     body: selectedToken.notes || '',
+                    spotlightMode:
+                      selectedToken.tokenCategory === 'item'
+                        ? 'item'
+                        : selectedToken.tokenCategory === 'player' || Boolean(selectedToken.sheetId)
+                          ? 'character'
+                          : 'npc',
+                    accentColor: selectedToken.outlineColor || selectedToken.color || '',
+                    combatSpriteUrl: selectedToken.combatSpriteUrl || '',
+                    combatSpriteMediaId: selectedToken.combatSpriteMediaId || '',
+                    presentedAtMs: Date.now(),
                   })
                 }
                 className="px-2.5 py-1.5 text-xs font-semibold vtt-accent-btn flex items-center gap-1.5 whitespace-nowrap shrink-0"

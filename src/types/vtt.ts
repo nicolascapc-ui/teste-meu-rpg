@@ -182,6 +182,8 @@ export interface Handout {
   updatedAt?: Timestamp | number;
 }
 
+export type HandoutSpotlightKind = 'character' | 'npc' | 'item' | 'handout';
+
 export interface ActiveHandoutProjection {
   id: string;
   title: string;
@@ -189,6 +191,12 @@ export interface ActiveHandoutProjection {
   imageUrl: string;
   mediaId: string;
   body: string;
+  spotlightMode?: HandoutSpotlightKind;
+  subtitle?: string;
+  accentColor?: string;
+  combatSpriteUrl?: string;
+  combatSpriteMediaId?: string;
+  presentedAtMs?: number;
 }
 
 export type SheetBlockType = 'bar' | 'attribute' | 'item' | 'counter' | 'text';
@@ -223,6 +231,7 @@ export interface CharacterSheet {
   ownerName: string;
   name: string;
   subtitle: string;
+  bio?: string;
   templateId: string; // Stores the custom RPG system name
   mode: 'modular' | 'pdf';
   avatarUrl?: string;
@@ -655,6 +664,7 @@ export const FIELD_LIMITS = {
   HANDOUT_BODY: 4000,
   SHEET_NAME: 100,
   SHEET_SUBTITLE: 120,
+  SHEET_BIO: 1200,
   NOTE_FOLDER: 60,
   NOTE_TITLE: 140,
   NOTE_CONTENT: 15000,

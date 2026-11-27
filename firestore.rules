@@ -246,13 +246,14 @@ service cloud.firestore {
 
     function isValidSheet(data, campaignId) {
       return data.keys().hasAll(['campaignId', 'gmUid', 'ownerUid', 'ownerName', 'name', 'subtitle', 'templateId', 'mode', 'pdfUrl', 'pdfMediaId', 'pdfFileName', 'blocks', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['campaignId', 'gmUid', 'ownerUid', 'ownerName', 'name', 'subtitle', 'templateId', 'mode', 'avatarUrl', 'avatarMediaId', 'pdfUrl', 'pdfMediaId', 'pdfFileName', 'blocks', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'ownerUid', 'ownerName', 'name', 'subtitle', 'bio', 'templateId', 'mode', 'avatarUrl', 'avatarMediaId', 'pdfUrl', 'pdfMediaId', 'pdfFileName', 'blocks', 'createdAt', 'updatedAt']) &&
         isValidId(data.campaignId) && data.campaignId == campaignId &&
         isValidId(data.gmUid) &&
         isValidId(data.ownerUid) &&
         data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 80 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
         data.subtitle is string && data.subtitle.size() <= 120 &&
+        (!('bio' in data) || (data.bio is string && data.bio.size() <= 1200)) &&
         data.templateId is string && data.templateId.size() >= 1 && data.templateId.size() <= 80 &&
         data.mode in ['modular', 'pdf'] &&
         (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 1024)) &&
@@ -620,7 +621,7 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
           (existing().ownerUid == request.auth.uid || isCampaignGM(campaignId)) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'subtitle', 'templateId', 'mode', 'avatarUrl', 'avatarMediaId', 'pdfUrl', 'pdfMediaId', 'pdfFileName', 'blocks', 'updatedAt']);
+          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'subtitle', 'bio', 'templateId', 'mode', 'avatarUrl', 'avatarMediaId', 'pdfUrl', 'pdfMediaId', 'pdfFileName', 'blocks', 'updatedAt']);
         allow delete: if isVerified() && isValidId(campaignId) && isValidId(sheetId) &&
           (existing().ownerUid == request.auth.uid || isCampaignGM(campaignId));
       }

@@ -1310,6 +1310,7 @@ export async function createCharacterSheet(params: {
   ownerName: string;
   name: string;
   subtitle?: string;
+  bio?: string;
   systemName?: string;
   mode?: 'modular' | 'pdf';
   avatarUrl?: string;
@@ -1334,6 +1335,7 @@ export async function createCharacterSheet(params: {
       ownerName: clampStr(params.ownerName, FIELD_LIMITS.DISPLAY_NAME) || 'Jogador',
       name: clampStr(params.name, FIELD_LIMITS.SHEET_NAME) || 'Novo Personagem',
       subtitle: clampStr(params.subtitle || 'Ficha Livre', FIELD_LIMITS.SHEET_SUBTITLE),
+      bio: clampStr(params.bio, FIELD_LIMITS.SHEET_BIO),
       templateId: clampStr(params.systemName || 'Sistema Livre', FIELD_LIMITS.CAMPAIGN_SYSTEM),
       mode: params.mode || 'modular',
       avatarUrl: clampStr(params.avatarUrl, FIELD_LIMITS.URL_MAX),
@@ -1357,6 +1359,7 @@ export async function updateCharacterSheet(
   updates: {
     name: string;
     subtitle: string;
+    bio?: string;
     templateId: string;
     mode: 'modular' | 'pdf';
     avatarUrl?: string;
@@ -1371,6 +1374,7 @@ export async function updateCharacterSheet(
     await updateDoc(doc(db, 'campaigns', campaignId, 'sheets', sheetId), {
       name: clampStr(updates.name, FIELD_LIMITS.SHEET_NAME) || 'Personagem',
       subtitle: clampStr(updates.subtitle, FIELD_LIMITS.SHEET_SUBTITLE),
+      bio: clampStr(updates.bio, FIELD_LIMITS.SHEET_BIO),
       templateId: clampStr(updates.templateId || 'Sistema Livre', FIELD_LIMITS.CAMPAIGN_SYSTEM),
       mode: updates.mode,
       avatarUrl: clampStr(updates.avatarUrl, FIELD_LIMITS.URL_MAX),

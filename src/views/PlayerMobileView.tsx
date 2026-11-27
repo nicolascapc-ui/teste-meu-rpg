@@ -383,6 +383,7 @@ export function PlayerMobileView({
               updateCharacterSheet(campaignId, sheet.id, {
                 name: sheet.name,
                 subtitle: sheet.subtitle,
+                bio: sheet.bio || '',
                 templateId: sheet.templateId,
                 mode: sheet.mode,
                 avatarUrl: sheet.avatarUrl || '',
@@ -433,6 +434,7 @@ export function PlayerMobileView({
               await updateCharacterSheet(campaignId, target.id, {
                 name: target.name,
                 subtitle: target.subtitle,
+                bio: target.bio || '',
                 templateId: target.templateId,
                 mode: target.mode,
                 avatarUrl: target.avatarUrl || '',

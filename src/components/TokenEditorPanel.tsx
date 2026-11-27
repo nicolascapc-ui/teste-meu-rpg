@@ -364,6 +364,16 @@ export function TokenEditorPanel({
                           imageUrl: token.imageUrl || '',
                           mediaId: token.mediaId || '',
                           body: token.notes || '',
+                          spotlightMode:
+                            token.tokenCategory === 'item'
+                              ? 'item'
+                              : token.tokenCategory === 'player' || Boolean(token.sheetId)
+                                ? 'character'
+                                : 'npc',
+                          accentColor: token.outlineColor || token.color || '',
+                          combatSpriteUrl: token.combatSpriteUrl || '',
+                          combatSpriteMediaId: token.combatSpriteMediaId || '',
+                          presentedAtMs: Date.now(),
                         })
                       }
                       className="py-2 px-2.5 text-[11px] font-semibold vtt-accent-btn flex items-center justify-center gap-1.5 whitespace-nowrap"

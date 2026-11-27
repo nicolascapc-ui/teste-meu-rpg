@@ -18,12 +18,12 @@ import {
   EyeOff,
   FileSpreadsheet,
   Film,
+  Folder,
   Grid,
   Hand,
   Hourglass,
   Image as ImageIcon,
   Layers,
-  Lock,
   Maximize2,
   MessageSquare,
   Monitor,
@@ -34,6 +34,7 @@ import {
   PanelRightOpen,
   QrCode,
   Radar,
+  Radio,
   Redo2,
   Ruler,
   SlidersHorizontal,
@@ -41,7 +42,6 @@ import {
   Swords,
   Type,
   Undo2,
-  Unlock,
   Upload,
   Volume2,
   X,
@@ -218,9 +218,12 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   const [toast, setToast] = useState('');
   const [activeRollAnim, setActiveRollAnim] = useState<ActiveDiceAnimation | null>(null);
 
-  // Backstage Mode ("Modo Bastidores"): allows GM to freeze/pin what players see while editing other scenes freely
-  const [isPlayerScenePinned, setIsPlayerScenePinned] = useState(false);
+  // Real-Time Scene Switch ("Troca em Tempo Real"):
+  // OFF by default -> clicking another scene only switches the GM's canvas while players' live gameplay keeps running uninterrupted!
+  // ON -> clicking any scene immediately switches what players see in real time.
+  const [liveSceneSwitch, setLiveSceneSwitch] = useState(false);
   const [gmPreviewSceneId, setGmPreviewSceneId] = useState<string | null>(null);
+  const [dockSceneFolderFilter, setDockSceneFolderFilter] = useState<string>('ALL');
 
   // Asset Vault (Acervo de Fotos & Itens para replicar em 1 clique)
   const [vaultAssets, setVaultAssets] = useState<VaultAssetItem[]>(() =>
@@ -521,10 +524,10 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     };
   }, [scenes, campaignId]);
 
-  // The scene currently edited by the GM (can differ from campaign.activeSceneId when Modo Bastidores is ON)
+  // The scene currently edited by the GM (can differ from campaign.activeSceneId whenever GM inspects another scene)
   const activeScene = useMemo(() => {
     if (scenes.length === 0) return null;
-    if (isPlayerScenePinned && gmPreviewSceneId) {
+    if (gmPreviewSceneId) {
       return (
         scenes.find((s) => s.id === gmPreviewSceneId) ||
         scenes.find((s) => s.id === campaign?.activeSceneId) ||
@@ -532,14 +535,76 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       );
     }
     return scenes.find((s) => s.id === campaign?.activeSceneId) || scenes[0];
-  }, [scenes, campaign?.activeSceneId, isPlayerScenePinned, gmPreviewSceneId]);
+  }, [scenes, campaign?.activeSceneId, gmPreviewSceneId]);
 
-  // Whether edits on `activeScene` should broadcast live to players right now
+  // Live gameplay NEVER freezes: whenever GM is on the scene currently live for players, all edits stream in real time!
   const shouldSyncCurrentSceneToPlayers = useMemo(() => {
     if (!activeScene || !campaign) return false;
-    if (isPlayerScenePinned) return false;
     return activeScene.id === campaign.activeSceneId;
-  }, [activeScene, campaign, isPlayerScenePinned]);
+  }, [activeScene, campaign]);
+
+  const isGmViewingDifferentScene = Boolean(
+    activeScene && campaign && activeScene.id !== campaign.activeSceneId
+  );
+
+  // Organize bottom scene dock by scene folders when folders exist
+  const dockSceneFolderInfo = useMemo(() => {
+    const hasFolders = scenes.some((s) => Boolean((s.folder || '').trim()));
+    if (!hasFolders) {
+      return {
+        hasFolders: false,
+        folders: [] as Array<{ name: string; count: number }>,
+        groups: [{ folder: '', scenes }],
+      };
+    }
+
+    const orderedNames: string[] = [];
+    const seen = new Set<string>();
+    const addName = (name: string) => {
+      if (!seen.has(name)) {
+        seen.add(name);
+        orderedNames.push(name);
+      }
+    };
+
+    for (const f of campaign?.sceneFolders || []) {
+      const clean = f.trim();
+      if (clean && scenes.some((s) => (s.folder || '').trim() === clean)) {
+        addName(clean);
+      }
+    }
+    for (const s of scenes) {
+      const clean = (s.folder || '').trim();
+      if (clean) addName(clean);
+    }
+    const hasUncategorized = scenes.some((s) => !(s.folder || '').trim());
+    if (hasUncategorized) {
+      addName('Sem pasta');
+    }
+
+    const folders = orderedNames.map((name) => ({
+      name,
+      count: scenes.filter((s) => ((s.folder || '').trim() || 'Sem pasta') === name).length,
+    }));
+
+    const activeFilter =
+      dockSceneFolderFilter !== 'ALL' && orderedNames.includes(dockSceneFolderFilter)
+        ? dockSceneFolderFilter
+        : 'ALL';
+
+    const targetFolders = activeFilter === 'ALL' ? orderedNames : [activeFilter];
+    const groups = targetFolders.map((folder) => ({
+      folder,
+      scenes: scenes.filter((s) => ((s.folder || '').trim() || 'Sem pasta') === folder),
+    }));
+
+    return {
+      hasFolders: true,
+      folders,
+      groups,
+      activeFilter,
+    };
+  }, [scenes, campaign?.sceneFolders, dockSceneFolderFilter]);
 
   useEffect(() => {
     setSceneDuelConfig(loadSceneDuelConfig(campaignId, activeScene));
@@ -625,7 +690,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       dynamicVision: snap.dynamicVision,
     };
     setScenes((prev) => prev.map((s) => (s.id === restored.id ? restored : s)));
-    const isLive = !isPlayerScenePinned && campaign.activeSceneId === restored.id;
+    const isLive = campaign.activeSceneId === restored.id;
     if (isLive && liveStateRef.current) {
       const restoredDuel = duelsBySceneRef.current[restored.id] || null;
       broadcastLiveState(campaign.id, {
@@ -787,13 +852,18 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     const savedDuelForScene = duelsBySceneRef.current[scene.id] || null;
     const duelConfigForScene = loadSceneDuelConfig(campaign.id, scene);
 
-    // If Backstage Mode (Modo Bastidores) is ON and we are not forcing projection, only switch the GM's canvas!
-    if (isPlayerScenePinned && !forceProjectToPlayers) {
-      notify(
-        savedDuelForScene
-          ? `Visualizando "${scene.name}" nos bastidores (duelo em andamento nesta cena).`
-          : `Editando "${scene.name}" nos bastidores (Tela dos Players continua fixada).`
-      );
+    // By default (liveSceneSwitch OFF), clicking another scene switches ONLY the GM's canvas
+    // while the players' live scene keeps running smoothly without freezing!
+    if (!liveSceneSwitch && !forceProjectToPlayers && Boolean(campaign.activeSceneId)) {
+      if (scene.id === campaign.activeSceneId) {
+        notify(`Cena "${scene.name}" (No Ar — alterações sincronizam ao vivo).`);
+      } else {
+        notify(
+          savedDuelForScene
+            ? `Visualizando "${scene.name}" só no mestre (duelo ativo nesta cena · players continuam em "${liveProjectedSceneName}").`
+            : `Editando "${scene.name}" só no mestre (players continuam em "${liveProjectedSceneName}").`
+        );
+      }
       return;
     }
 
@@ -840,7 +910,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   function handleReturnToDuel(targetDuel: ActiveDuelState) {
     const targetScene = scenes.find((s) => s.id === targetDuel.sceneId);
     if (!targetScene) return;
-    if (isPlayerScenePinned) {
+    if (!liveSceneSwitch) {
       setGmPreviewSceneId(targetScene.id);
       notify(`Retornando ao duelo em "${targetScene.name}".`);
       return;
@@ -1139,15 +1209,94 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     }
   }
 
+  function extractSheetBioText(sheet: CharacterSheet | null): string {
+    if (!sheet) return '';
+    if (sheet.bio && sheet.bio.trim()) return sheet.bio.trim();
+    const bioBlock = sheet.blocks.find(
+      (b) =>
+        b.type === 'text' &&
+        (b.text || '').trim().length > 0 &&
+        /bio|hist[oó]r|descri|sobre|resumo|origem/i.test(b.label || '')
+    );
+    return bioBlock?.text?.trim() || '';
+  }
+
+  function enrichProjectionForTv(handout: ActiveHandoutProjection): ActiveHandoutProjection {
+    let matchedToken: SceneToken | null = null;
+    if (handout.id.startsWith('tok_pop_')) {
+      const tokId = handout.id.slice('tok_pop_'.length);
+      matchedToken =
+        activeScene?.tokens.find((t) => t.id === tokId) ||
+        scenes.flatMap((s) => s.tokens).find((t) => t.id === tokId) ||
+        null;
+    }
+
+    const matchedSheet =
+      (matchedToken ? findSheetForToken(matchedToken, sheets) : null) ||
+      sheets.find(
+        (s) => s.name.trim().toLowerCase() === (handout.title || '').trim().toLowerCase()
+      ) ||
+      null;
+
+    const sheetBio = extractSheetBioText(matchedSheet);
+    const resolvedBody = sheetBio || handout.body || matchedToken?.notes || '';
+    const resolvedSubtitle = handout.subtitle || matchedSheet?.subtitle || '';
+
+    const inferredSpotlightMode =
+      handout.spotlightMode ||
+      (matchedToken?.tokenCategory === 'item'
+        ? 'item'
+        : matchedToken?.tokenCategory === 'player' || Boolean(matchedSheet)
+          ? 'character'
+          : handout.kind === 'npc'
+            ? 'npc'
+            : 'handout');
+
+    return {
+      ...handout,
+      spotlightMode: inferredSpotlightMode,
+      subtitle: resolvedSubtitle,
+      body: resolvedBody,
+      imageUrl: handout.imageUrl || matchedSheet?.avatarUrl || '',
+      mediaId: handout.mediaId || matchedSheet?.avatarMediaId || '',
+      combatSpriteUrl: handout.combatSpriteUrl || matchedToken?.combatSpriteUrl || '',
+      combatSpriteMediaId: handout.combatSpriteMediaId || matchedToken?.combatSpriteMediaId || '',
+      accentColor: handout.accentColor || matchedToken?.outlineColor || matchedToken?.color || '',
+      presentedAtMs: handout.presentedAtMs || Date.now(),
+    };
+  }
+
   async function handleProjectHandout(handout: ActiveHandoutProjection | null) {
     if (!campaign) return;
-    await projectHandoutToAll(campaign.id, handout, liveState);
-    if (handout) {
-      notify(`"${handout.title}" projetado na Tela dos Jogadores.`);
+    const enriched = handout ? enrichProjectionForTv(handout) : null;
+    await projectHandoutToAll(campaign.id, enriched, liveStateRef.current);
+    if (enriched) {
+      notify(`"${enriched.title}" apresentado na Tela dos Jogadores.`);
     } else {
       setPreviewHandout(false);
       notify('Projeção recolhida.');
     }
+  }
+
+  async function handleProjectSheetToTv(sheet: CharacterSheet) {
+    const linkedToken =
+      activeScene?.tokens.find((t) => t.sheetId === sheet.id) ||
+      scenes.flatMap((s) => s.tokens).find((t) => t.sheetId === sheet.id) ||
+      null;
+    await handleProjectHandout({
+      id: `sheet_pop_${sheet.id}`,
+      title: sheet.name,
+      kind: 'npc',
+      spotlightMode: 'character',
+      subtitle: sheet.subtitle || '',
+      imageUrl: sheet.avatarUrl || linkedToken?.imageUrl || '',
+      mediaId: sheet.avatarMediaId || linkedToken?.mediaId || '',
+      combatSpriteUrl: linkedToken?.combatSpriteUrl || '',
+      combatSpriteMediaId: linkedToken?.combatSpriteMediaId || '',
+      accentColor: linkedToken?.outlineColor || linkedToken?.color || '',
+      body: extractSheetBioText(sheet),
+      presentedAtMs: Date.now(),
+    });
   }
 
   async function handleDiceOrChat(params: {
@@ -1889,6 +2038,36 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           </button>
 
           {/* "Visão dos Players" (Section Pinning, Backstage Improv & Custom Interlude Control) */}
+          {/* Quick 1-Click Toggle: Troca em Tempo Real (OFF = Só Mestre ao clicar cenas; ON = muda pros Players ao vivo) */}
+          <button
+            type="button"
+            onClick={() => {
+              const next = !liveSceneSwitch;
+              setLiveSceneSwitch(next);
+              notify(
+                next
+                  ? 'Troca em Tempo Real ATIVADA: clicar em qualquer cena muda também para os players.'
+                  : 'Troca em Tempo Real desativada: clicar em cenas muda só a sua tela (a cena No Ar continua rodando normal).'
+              );
+            }}
+            className={`px-2.5 py-2 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+              liveSceneSwitch
+                ? 'bg-emerald-700 text-white border-emerald-500 font-semibold'
+                : 'vtt-canvas vtt-border vtt-muted hover:opacity-100'
+            }`}
+            title={
+              liveSceneSwitch
+                ? 'Tempo Real ATIVADO: clicar em qualquer cena muda imediatamente na tela dos players'
+                : 'Tempo Real DESATIVADO: clicar em outras cenas muda apenas sua tela enquanto a cena No Ar dos players continua rodando normalmente'
+            }
+          >
+            <Radio className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden sm:inline">
+              {liveSceneSwitch ? 'Tempo Real ON' : 'Tempo Real OFF'}
+            </span>
+          </button>
+
+          {/* Player View Mode Popover */}
           <div className="relative">
             <button
               type="button"
@@ -1897,26 +2076,22 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 setShowGridPopover(false);
               }}
               className={`px-2.5 py-2 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
-                isPlayerScenePinned || currentPlayerViewMode !== 'scene'
+                currentPlayerViewMode !== 'scene' || isGmViewingDifferentScene
                   ? 'bg-amber-700/90 text-white border-amber-500 font-semibold'
                   : 'vtt-canvas vtt-border hover:opacity-90'
               }`}
-              title="Controlar o que os Players veem na TV/Celular e ativar Modo Bastidores para editar cenas futuras sem interromper o jogo"
+              title="Escolher a seção exibida na TV/Celulares dos players ou projetar a cena atual"
             >
-              {isPlayerScenePinned ? (
-                <Lock className="w-3.5 h-3.5 text-amber-300" />
-              ) : (
-                <Monitor className="w-3.5 h-3.5 vtt-accent-text" />
-              )}
+              <Monitor className="w-3.5 h-3.5 shrink-0" />
               <span className="hidden sm:inline">
-                {isPlayerScenePinned
-                  ? 'Bastidores ON'
-                  : currentPlayerViewMode === 'clues'
+                {currentPlayerViewMode === 'clues'
                   ? 'Players: Pistas'
                   : currentPlayerViewMode === 'dice'
                   ? 'Players: Dados'
                   : currentPlayerViewMode === 'standby'
                   ? 'Players: Interlúdio'
+                  : isGmViewingDifferentScene
+                  ? 'Editando Outra Cena'
                   : 'Visão dos Players'}
               </span>
             </button>
@@ -1941,49 +2116,37 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                   </button>
                 </div>
 
-                {/* 1. Backstage Mode (Congelar / Fixar Cena nos Players) */}
+                {/* 1. Real-Time Scene Switching Toggle */}
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold">
-                      Modo Bastidores (Improviso)
+                      Trocar Cenas em Tempo Real
                     </span>
                     <button
                       type="button"
                       onClick={() => {
-                        const next = !isPlayerScenePinned;
-                        setIsPlayerScenePinned(next);
-                        if (next && activeScene) {
-                          setGmPreviewSceneId(activeScene.id);
-                          notify(
-                            `Modo Bastidores ativado: os players continuam vendo "${liveProjectedSceneName}" enquanto você edita livremente.`
-                          );
-                        } else if (!next && activeScene) {
-                          void handleSelectScene(activeScene, true);
-                        }
+                        const next = !liveSceneSwitch;
+                        setLiveSceneSwitch(next);
+                        notify(
+                          next
+                            ? 'Troca em Tempo Real ATIVADA: clicar em qualquer cena muda também para os players.'
+                            : 'Troca em Tempo Real desativada: você pode navegar e editar outras cenas sem trocar a tela dos players.'
+                        );
                       }}
-                      className={`px-2.5 py-1 text-[11px] font-semibold border flex items-center gap-1 ${
-                        isPlayerScenePinned
-                          ? 'bg-amber-700 text-white border-amber-500'
+                      className={`px-2.5 py-1 text-[11px] font-semibold border flex items-center gap-1 whitespace-nowrap ${
+                        liveSceneSwitch
+                          ? 'bg-emerald-700 text-white border-emerald-500'
                           : 'vtt-canvas vtt-border vtt-muted'
                       }`}
                     >
-                      {isPlayerScenePinned ? (
-                        <>
-                          <Lock className="w-3 h-3" />
-                          Fixado
-                        </>
-                      ) : (
-                        <>
-                          <Unlock className="w-3 h-3" />
-                          Ao Vivo
-                        </>
-                      )}
+                      <Radio className="w-3 h-3" />
+                      {liveSceneSwitch ? 'Ativado' : 'Desativado'}
                     </button>
                   </div>
                   <p className="text-[11px] vtt-muted leading-relaxed">
-                    Quando <strong>Fixado</strong>, você pode trocar de cena ou preparar futuros mapas, tokens e muros sem alterar a tela dos jogadores.
+                    <strong>Desativado (padrão):</strong> clicar em outras cenas muda só a sua visão para preparar mapas, enquanto a cena <strong>No Ar</strong> continua rodando ao vivo para os players. <strong>Ativado:</strong> cada cena clicada muda imediatamente para os players.
                   </p>
-                  {isPlayerScenePinned && activeScene && (
+                  {isGmViewingDifferentScene && activeScene && (
                     <button
                       type="button"
                       onClick={() => {
@@ -2217,14 +2380,14 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* Left/Center Stage Area */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 relative">
-          {/* Active Backstage / Forced Section Status Banner for GM */}
-          {(isPlayerScenePinned || currentPlayerViewMode !== 'scene') && (
+          {/* Active Non-Live Scene Preview or Forced Player Section Banner */}
+          {(isGmViewingDifferentScene || currentPlayerViewMode !== 'scene') && (
             <div className="px-4 py-1.5 border-b border-amber-500/40 bg-amber-950/60 text-amber-100 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
               <div className="flex items-center gap-2 min-w-0">
-                <Lock className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <Monitor className="w-3.5 h-3.5 text-amber-300 shrink-0" />
                 <span className="truncate">
-                  {isPlayerScenePinned
-                    ? `Modo Bastidores: Players veem "${liveProjectedSceneName}" · Você está editando "${activeScene?.name || ''}"`
+                  {isGmViewingDifferentScene
+                    ? `Players no ar: "${liveProjectedSceneName}" · Você editando só no mestre: "${activeScene?.name || ''}"`
                     : `Seção fixada nos Players: ${
                         currentPlayerViewMode === 'clues'
                           ? 'Quadro de Pistas & Wiki Pública'
@@ -2235,32 +2398,32 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 </span>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                {isPlayerScenePinned && activeScene && (
+                {isGmViewingDifferentScene && activeScene && (
                   <button
                     type="button"
                     onClick={() => void handleSelectScene(activeScene, true)}
-                    className="px-2.5 py-0.5 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-[11px]"
+                    className="px-2.5 py-0.5 bg-emerald-700 hover:bg-emerald-600 text-white font-semibold text-[11px] whitespace-nowrap"
                   >
-                    Projetar esta cena
+                    Projetar esta cena nos Players
                   </button>
                 )}
-                {isPlayerScenePinned && (
+                {isGmViewingDifferentScene && campaign.activeSceneId && (
                   <button
                     type="button"
                     onClick={() => {
-                      setIsPlayerScenePinned(false);
-                      if (activeScene) void handleSelectScene(activeScene, true);
+                      const liveSc = scenes.find((s) => s.id === campaign.activeSceneId);
+                      if (liveSc) setGmPreviewSceneId(liveSc.id);
                     }}
-                    className="px-2 py-0.5 border border-amber-400/50 hover:bg-amber-900/50 text-[11px]"
+                    className="px-2.5 py-0.5 border border-amber-400/50 hover:bg-amber-900/50 text-[11px] whitespace-nowrap"
                   >
-                    Sair dos Bastidores
+                    Voltar para "{liveProjectedSceneName}"
                   </button>
                 )}
                 {currentPlayerViewMode !== 'scene' && (
                   <button
                     type="button"
                     onClick={() => void handleChangePlayerViewMode('scene')}
-                    className="px-2 py-0.5 border border-amber-400/50 hover:bg-amber-900/50 text-[11px]"
+                    className="px-2 py-0.5 border border-amber-400/50 hover:bg-amber-900/50 text-[11px] whitespace-nowrap"
                   >
                     Voltar Players ao Mapa
                   </button>
@@ -2615,92 +2778,176 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
             )}
           </div>
 
-          {/* Quick-Switch Scene Dock */}
-          <div className="h-24 border-t vtt-border vtt-surface px-3 py-2 flex items-center gap-2.5 overflow-x-auto shrink-0">
-            {scenes.map((scene) => {
-              const isEditing = activeScene?.id === scene.id;
-              const isLiveOnPlayers = campaign.activeSceneId === scene.id;
-              const thumb = sceneThumbs[scene.id];
-              return (
+          {/* Quick-Switch Scene Dock (Folder-Aware & Cleanly Grouped) */}
+          <div className="border-t vtt-border vtt-surface flex flex-col shrink-0">
+            {dockSceneFolderInfo.hasFolders && (
+              <div className="px-3 pt-1.5 pb-1 border-b vtt-border/60 flex items-center gap-1.5 overflow-x-auto">
                 <button
-                  key={scene.id}
                   type="button"
-                  onClick={() => void handleSelectScene(scene)}
-                  className={`relative h-full w-36 shrink-0 border overflow-hidden text-left transition-transform active:scale-[0.98] ${
-                    isEditing ? 'ring-2' : 'vtt-border opacity-80 hover:opacity-100'
+                  onClick={() => setDockSceneFolderFilter('ALL')}
+                  className={`px-2 py-0.5 text-[11px] flex items-center gap-1 whitespace-nowrap shrink-0 border transition-colors ${
+                    dockSceneFolderInfo.activeFilter === 'ALL'
+                      ? 'vtt-accent-btn border-transparent font-semibold'
+                      : 'vtt-canvas vtt-border vtt-muted hover:opacity-100'
                   }`}
-                  style={
-                    isEditing
-                      ? {
-                          borderColor: 'var(--accent-primary)',
-                          boxShadow: '0 0 0 1px var(--accent-primary)',
-                        }
-                      : undefined
-                  }
                 >
-                  {thumb ? (
-                    scene.mediaKind === 'video' ? (
-                      <video
-                        src={thumb}
-                        muted
-                        playsInline
-                        className="w-full h-full object-cover bg-black"
-                      />
-                    ) : (
-                      <img
-                        src={thumb}
-                        alt={scene.name}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
-                      />
-                    )
-                  ) : (
-                    <div className="w-full h-full vtt-subtle flex items-center justify-center">
-                      {scene.mediaKind === 'video' ? (
-                        <Film className="w-5 h-5 vtt-muted" />
-                      ) : (
-                        <ImageIcon className="w-5 h-5 vtt-muted" />
+                  <Folder className="w-3 h-3 shrink-0" />
+                  <span>Todas ({scenes.length})</span>
+                </button>
+                {dockSceneFolderInfo.folders.map((folder) => {
+                  const active = dockSceneFolderInfo.activeFilter === folder.name;
+                  const hasLiveInside = scenes.some(
+                    (s) =>
+                      s.id === campaign.activeSceneId &&
+                      ((s.folder || '').trim() || 'Sem pasta') === folder.name
+                  );
+                  return (
+                    <button
+                      key={folder.name}
+                      type="button"
+                      onClick={() => setDockSceneFolderFilter(folder.name)}
+                      className={`px-2 py-0.5 text-[11px] flex items-center gap-1.5 whitespace-nowrap shrink-0 border transition-colors ${
+                        active
+                          ? 'vtt-accent-btn border-transparent font-semibold'
+                          : 'vtt-canvas vtt-border vtt-muted hover:opacity-100'
+                      }`}
+                    >
+                      <Folder className="w-3 h-3 shrink-0" />
+                      <span>{folder.name}</span>
+                      <span className="text-[10px] opacity-75 tabular-nums">({folder.count})</span>
+                      {hasLiveInside && (
+                        <span
+                          className={`text-[9px] font-bold uppercase tracking-wider ${
+                            active ? 'text-white' : 'text-emerald-500'
+                          }`}
+                        >
+                          · No Ar
+                        </span>
                       )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <div
+              className={`${
+                dockSceneFolderInfo.hasFolders ? 'h-[98px]' : 'h-24'
+              } px-3 py-2 flex items-stretch gap-3 overflow-x-auto`}
+            >
+              {dockSceneFolderInfo.groups.map((group, groupIdx) => (
+                <div
+                  key={group.folder || '__all__'}
+                  className={`flex flex-col gap-1 shrink-0 h-full ${
+                    groupIdx > 0 && dockSceneFolderInfo.hasFolders
+                      ? 'pl-3 border-l vtt-border'
+                      : ''
+                  }`}
+                >
+                  {dockSceneFolderInfo.hasFolders && group.folder && (
+                    <div className="flex items-center gap-1 text-[10px] font-semibold vtt-muted leading-none px-0.5 whitespace-nowrap">
+                      <Folder className="w-2.5 h-2.5 vtt-accent-text shrink-0" />
+                      <span className="truncate max-w-[180px]">{group.folder}</span>
+                      <span className="opacity-70 tabular-nums">· {group.scenes.length}</span>
                     </div>
                   )}
+                  <div className="flex-1 min-h-0 flex items-center gap-2">
+                    {group.scenes.map((scene) => {
+                      const isEditing = activeScene?.id === scene.id;
+                      const isLiveOnPlayers = campaign.activeSceneId === scene.id;
+                      const thumb = sceneThumbs[scene.id];
+                      const sceneFolderLabel = (scene.folder || '').trim();
+                      return (
+                        <button
+                          key={scene.id}
+                          type="button"
+                          onClick={() => void handleSelectScene(scene)}
+                          className={`relative h-full w-36 shrink-0 border overflow-hidden text-left transition-transform active:scale-[0.98] ${
+                            isEditing ? 'ring-2' : 'vtt-border opacity-80 hover:opacity-100'
+                          }`}
+                          style={
+                            isEditing
+                              ? {
+                                  borderColor: 'var(--accent-primary)',
+                                  boxShadow: '0 0 0 1px var(--accent-primary)',
+                                }
+                              : undefined
+                          }
+                        >
+                          {thumb ? (
+                            scene.mediaKind === 'video' ? (
+                              <video
+                                src={thumb}
+                                muted
+                                playsInline
+                                className="w-full h-full object-cover bg-black"
+                              />
+                            ) : (
+                              <img
+                                src={thumb}
+                                alt={scene.name}
+                                referrerPolicy="no-referrer"
+                                className="w-full h-full object-cover"
+                              />
+                            )
+                          ) : (
+                            <div className="w-full h-full vtt-subtle flex items-center justify-center">
+                              {scene.mediaKind === 'video' ? (
+                                <Film className="w-5 h-5 vtt-muted" />
+                              ) : (
+                                <ImageIcon className="w-5 h-5 vtt-muted" />
+                              )}
+                            </div>
+                          )}
 
-                  {/* Top status badges for Live, Backstage & Active Scene Duel */}
-                  {isLiveOnPlayers && (
-                    <span className="absolute top-1 left-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-emerald-700/90 text-white">
-                      No Ar
-                    </span>
-                  )}
-                  {isPlayerScenePinned && isEditing && !isLiveOnPlayers && (
-                    <span className="absolute top-1 left-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-600/95 text-white">
-                      Bastidores
-                    </span>
-                  )}
-                  {Boolean(duelsByScene[scene.id]) && (
-                    <span
-                      className="absolute top-1 right-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-700/95 text-white flex items-center gap-0.5 shadow-sm"
-                      title="Duelo 3D ativo nesta cena"
-                    >
-                      <Swords className="w-2.5 h-2.5" />
-                      Duelo
-                    </span>
-                  )}
+                          {/* Top status labels for Live, GM-Only Preview & Active Scene Duel */}
+                          {isLiveOnPlayers && (
+                            <span className="absolute top-1 left-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-emerald-700/90 text-white">
+                              No Ar
+                            </span>
+                          )}
+                          {isEditing && !isLiveOnPlayers && (
+                            <span className="absolute top-1 left-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-600/95 text-white">
+                              Só Mestre
+                            </span>
+                          )}
+                          {Boolean(duelsByScene[scene.id]) && (
+                            <span
+                              className="absolute top-1 right-1 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-700/95 text-white flex items-center gap-0.5 shadow-sm"
+                              title="Duelo 3D ativo nesta cena"
+                            >
+                              <Swords className="w-2.5 h-2.5" />
+                              Duelo
+                            </span>
+                          )}
 
-                  <div className="absolute inset-x-0 bottom-0 px-2 py-1 bg-gradient-to-t from-black/85 via-black/55 to-transparent text-stone-100">
-                    <p className="text-[11px] font-semibold truncate">{scene.name}</p>
+                          <div className="absolute inset-x-0 bottom-0 px-2 py-1 bg-gradient-to-t from-black/90 via-black/60 to-transparent text-stone-100">
+                            {sceneFolderLabel && dockSceneFolderInfo.activeFilter !== 'ALL' && (
+                              <p className="text-[9px] text-amber-300/90 truncate leading-tight">
+                                {sceneFolderLabel}
+                              </p>
+                            )}
+                            <p className="text-[11px] font-semibold truncate leading-tight">
+                              {scene.name}
+                            </p>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              onClick={() => {
-                setActiveDrawer('scenes');
-                setDrawerOpen(true);
-              }}
-              className="h-full px-4 border border-dashed vtt-border vtt-muted hover:opacity-100 text-xs whitespace-nowrap shrink-0"
-            >
-              + Nova cena
-            </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveDrawer('scenes');
+                  setDrawerOpen(true);
+                }}
+                className="h-full px-4 border border-dashed vtt-border vtt-muted hover:opacity-100 text-xs whitespace-nowrap shrink-0 self-end"
+              >
+                + Nova cena
+              </button>
+            </div>
           </div>
         </div>
 
@@ -2783,8 +3030,8 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                     linkedMusicId: updates.linkedMusicId,
                     linkedAmbienceId: updates.linkedAmbienceId,
                   });
-                  // If editing the currently live scene (and not in Backstage), immediately reflect changes on TV without losing any active duel
-                  if (!isPlayerScenePinned && campaign.activeSceneId === scene.id) {
+                  // If editing the currently live scene, immediately reflect changes on TV without losing any active duel
+                  if (campaign.activeSceneId === scene.id) {
                     const updatedScene: Scene = { ...scene, ...updates };
                     await activateScene(
                       campaign.id,
@@ -2863,6 +3110,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 uploadContext={uploadContext}
                 sheets={sheets}
                 canDragToCanvas
+                onProjectToTv={(sheet) => void handleProjectSheetToTv(sheet)}
                 onCreateSheet={(payload) =>
                   createCharacterSheet({
                     campaignId: campaign.id,
@@ -2876,6 +3124,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                   updateCharacterSheet(campaign.id, sheet.id, {
                     name: sheet.name,
                     subtitle: sheet.subtitle,
+                    bio: sheet.bio || '',
                     templateId: sheet.templateId,
                     mode: sheet.mode,
                     avatarUrl: sheet.avatarUrl || '',
@@ -2929,6 +3178,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                   await updateCharacterSheet(campaign.id, target.id, {
                     name: target.name,
                     subtitle: target.subtitle,
+                    bio: target.bio || '',
                     templateId: target.templateId,
                     mode: target.mode,
                     avatarUrl: target.avatarUrl || '',
@@ -3050,7 +3300,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         />
       )}
 
-      {/* Optional GM Preview of Projected Handout */}
+      {/* Optional GM Preview of Projected Handout / JRPG Showcase */}
       {previewHandout && liveState?.activeHandout && (
         <HandoutOverlay
           campaignId={campaign.id}
@@ -3058,6 +3308,12 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
           canDismiss
           dismissLabel="Fechar prévia"
           onDismiss={() => setPreviewHandout(false)}
+          onReplay={() =>
+            void handleProjectHandout({
+              ...liveState.activeHandout!,
+              presentedAtMs: Date.now(),
+            })
+          }
         />
       )}
 

@@ -173,6 +173,7 @@
         "ownerName": { "type": "string", "minLength": 1, "maxLength": 80 },
         "name": { "type": "string", "minLength": 1, "maxLength": 100 },
         "subtitle": { "type": "string", "maxLength": 120 },
+        "bio": { "type": "string", "maxLength": 1200 },
         "templateId": { "type": "string", "maxLength": 80 },
         "mode": { "type": "string", "enum": ["modular", "pdf"] },
         "avatarUrl": { "type": "string", "maxLength": 1024 },

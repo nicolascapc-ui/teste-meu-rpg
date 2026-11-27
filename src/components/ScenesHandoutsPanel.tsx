@@ -19,6 +19,7 @@ import {
   Link2,
   Lock,
   Maximize2,
+  Monitor,
   Package,
   Pencil,
   Plus,
@@ -1564,14 +1565,45 @@ export function ScenesHandoutsPanel({
                             <GripVertical className="w-2.5 h-2.5" />
                             Arrastar
                           </span>
-                          <button
-                            type="button"
-                            onClick={() => onRemoveVaultAsset(asset.id)}
-                            className="absolute top-1 right-1 p-1 bg-black/75 text-stone-300 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                            title="Remover do acervo"
-                          >
-                            <X className="w-3 h-3" />
-                          </button>
+                          <div className="absolute top-1 right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const folderLower = (asset.folder || '').toLowerCase();
+                                const isItemVault =
+                                  asset.defaultKind === 'image' ||
+                                  folderLower.includes('item') ||
+                                  folderLower.includes('itens') ||
+                                  folderLower.includes('arma') ||
+                                  folderLower.includes('objet');
+                                void onProjectHandout({
+                                  id: `vault_pop_${asset.id}`,
+                                  title: asset.name,
+                                  kind: 'npc',
+                                  imageUrl: asset.imageUrl || '',
+                                  mediaId: asset.mediaId || '',
+                                  body: '',
+                                  spotlightMode: isItemVault ? 'item' : 'npc',
+                                  combatSpriteUrl: asset.combatSpriteUrl || '',
+                                  combatSpriteMediaId: asset.combatSpriteMediaId || '',
+                                  presentedAtMs: Date.now(),
+                                });
+                              }}
+                              className="p-1 bg-black/80 text-amber-300 hover:text-white"
+                              title="Mostrar na TV com animação JRPG"
+                            >
+                              <Monitor className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onRemoveVaultAsset(asset.id)}
+                              className="p-1 bg-black/75 text-stone-300 hover:text-red-400"
+                              title="Remover do acervo"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
                         <p className="px-1.5 pt-1 text-[10px] font-semibold truncate">
                           {asset.name}
@@ -1849,6 +1881,35 @@ export function ScenesHandoutsPanel({
                                   </span>
                                 </div>
                                 <div className="flex items-center gap-0.5 shrink-0">
+                                  {t.layerKind !== 'brush' && t.layerKind !== 'text' && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void onProjectHandout({
+                                          id: `tok_pop_${t.id}`,
+                                          title: t.name,
+                                          kind: 'npc',
+                                          imageUrl: t.imageUrl || '',
+                                          mediaId: t.mediaId || '',
+                                          body: t.notes || '',
+                                          spotlightMode:
+                                            cat === 'item'
+                                              ? 'item'
+                                              : cat === 'player' || Boolean(t.sheetId)
+                                                ? 'character'
+                                                : 'npc',
+                                          accentColor: t.outlineColor || t.color || '',
+                                          combatSpriteUrl: t.combatSpriteUrl || '',
+                                          combatSpriteMediaId: t.combatSpriteMediaId || '',
+                                          presentedAtMs: Date.now(),
+                                        })
+                                      }
+                                      className="p-1 vtt-accent-text hover:opacity-100"
+                                      title="Apresentar na TV (estilo JRPG)"
+                                    >
+                                      <Monitor className="w-3 h-3" />
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => moveLayerOrder(index, -1)}
