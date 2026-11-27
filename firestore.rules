@@ -80,7 +80,7 @@ service cloud.firestore {
     // -------------------------------------------------------------------------
     function isValidCampaign(data) {
       return data.keys().hasAll(['title', 'system', 'description', 'gmUid', 'gmName', 'roomCode', 'activeSceneId', 'theme', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['title', 'system', 'description', 'gmUid', 'gmName', 'roomCode', 'activeSceneId', 'theme', 'folders', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['title', 'system', 'description', 'gmUid', 'gmName', 'roomCode', 'activeSceneId', 'theme', 'folders', 'sceneFolders', 'createdAt', 'updatedAt']) &&
         data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
         data.system is string && data.system.size() >= 1 && data.system.size() <= 80 &&
         data.description is string && data.description.size() <= 500 &&
@@ -90,6 +90,7 @@ service cloud.firestore {
         data.activeSceneId is string && data.activeSceneId.size() <= 128 &&
         isValidTheme(data.theme) &&
         (!('folders' in data) || (data.folders is list && data.folders.size() <= 40 && (data.folders.size() == 0 || data.folders[0] is string))) &&
+        (!('sceneFolders' in data) || (data.sceneFolders is list && data.sceneFolders.size() <= 40 && (data.sceneFolders.size() == 0 || data.sceneFolders[0] is string))) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -127,13 +128,15 @@ service cloud.firestore {
 
     function isValidLiveState(data, campaignId) {
       return data.keys().hasAll(['campaignId', 'gmUid', 'campaignTitle', 'theme', 'activeScene', 'activeHandout', 'recentPublicRolls', 'updatedAt']) &&
-        data.keys().hasOnly(['campaignId', 'gmUid', 'campaignTitle', 'theme', 'activeScene', 'activeHandout', 'recentPublicRolls', 'shakePulseMs', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'campaignTitle', 'theme', 'activeScene', 'activeHandout', 'interludeConfig', 'liveAudio', 'recentPublicRolls', 'shakePulseMs', 'updatedAt']) &&
         isValidId(data.campaignId) && data.campaignId == campaignId &&
         isValidId(data.gmUid) &&
         data.campaignTitle is string && data.campaignTitle.size() >= 1 && data.campaignTitle.size() <= 120 &&
         isValidTheme(data.theme) &&
         (data.activeScene == null || data.activeScene is map) &&
         (data.activeHandout == null || data.activeHandout is map) &&
+        (!('interludeConfig' in data) || data.interludeConfig == null || data.interludeConfig is map) &&
+        (!('liveAudio' in data) || data.liveAudio == null || data.liveAudio is map) &&
         data.recentPublicRolls is list && data.recentPublicRolls.size() <= 40 &&
         (data.recentPublicRolls.size() == 0 || data.recentPublicRolls[0] is map) &&
         (!('shakePulseMs' in data) || data.shakePulseMs is number) &&
@@ -148,6 +151,36 @@ service cloud.firestore {
         data.notes is list && data.notes.size() <= 80 &&
         (data.notes.size() == 0 || data.notes[0] is map) &&
         data.updatedAt is timestamp;
+    }
+
+    function isValidLiveChat(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'messages', 'roster', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'messages', 'roster', 'updatedAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        data.messages is list && data.messages.size() <= 80 &&
+        (data.messages.size() == 0 || data.messages[0] is map) &&
+        data.roster is list && data.roster.size() <= 30 &&
+        (data.roster.size() == 0 || data.roster[0] is map) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessage(data, campaignId) {
+      return data.keys().hasAll(['campaignId', 'gmUid', 'channelId', 'senderUid', 'senderName', 'senderRole', 'recipientUid', 'recipientName', 'text', 'timestampMs', 'createdAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'channelId', 'senderUid', 'senderName', 'senderRole', 'recipientUid', 'recipientName', 'text', 'replyTo', 'attachment', 'timestampMs', 'createdAt']) &&
+        isValidId(data.campaignId) && data.campaignId == campaignId &&
+        isValidId(data.gmUid) &&
+        data.channelId is string && data.channelId.size() >= 1 && data.channelId.size() <= 200 &&
+        isValidId(data.senderUid) &&
+        data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 80 &&
+        data.senderRole in ['gm', 'player'] &&
+        isValidId(data.recipientUid) &&
+        data.recipientName is string && data.recipientName.size() >= 1 && data.recipientName.size() <= 80 &&
+        data.text is string && data.text.size() <= 4000 &&
+        (!('replyTo' in data) || data.replyTo == null || data.replyTo is map) &&
+        (!('attachment' in data) || data.attachment == null || data.attachment is map) &&
+        data.timestampMs is number &&
+        data.createdAt is timestamp;
     }
 
     function isValidMediaAsset(data, campaignId) {
@@ -172,10 +205,11 @@ service cloud.firestore {
 
     function isValidScene(data, campaignId) {
       return data.keys().hasAll(['campaignId', 'gmUid', 'name', 'category', 'imageUrl', 'mediaId', 'order', 'grid', 'fogEnabled', 'fogStrokes', 'tokens', 'linkedMusicId', 'linkedAmbienceId', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['campaignId', 'gmUid', 'name', 'category', 'imageUrl', 'mediaId', 'mediaKind', 'order', 'grid', 'fogEnabled', 'fogStrokes', 'walls', 'dynamicVision', 'tokens', 'linkedMusicId', 'linkedAmbienceId', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'name', 'folder', 'category', 'imageUrl', 'mediaId', 'mediaKind', 'order', 'grid', 'fogEnabled', 'fogStrokes', 'walls', 'dynamicVision', 'tokens', 'linkedMusicId', 'linkedAmbienceId', 'createdAt', 'updatedAt']) &&
         isValidId(data.campaignId) && data.campaignId == campaignId &&
         isValidId(data.gmUid) &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        (!('folder' in data) || (data.folder is string && data.folder.size() <= 60)) &&
         data.category in ['tactical', 'landscape', 'location'] &&
         data.imageUrl is string && data.imageUrl.size() <= 1024 &&
         data.mediaId is string && data.mediaId.size() <= 128 &&
@@ -348,7 +382,8 @@ service cloud.firestore {
           incoming().diff(existing()).affectedKeys().hasOnly(['title', 'system', 'description', 'updatedAt']) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['activeSceneId', 'updatedAt']) ||
           incoming().diff(existing()).affectedKeys().hasOnly(['theme', 'updatedAt']) ||
-          incoming().diff(existing()).affectedKeys().hasOnly(['folders', 'updatedAt'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['folders', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly(['sceneFolders', 'updatedAt'])
         );
       allow delete: if isVerified() && isValidId(campaignId) && existing().gmUid == request.auth.uid;
 
@@ -400,7 +435,7 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           (
             (isCampaignGM(campaignId) &&
-              incoming().diff(existing()).affectedKeys().hasOnly(['campaignTitle', 'theme', 'activeScene', 'activeHandout', 'recentPublicRolls', 'shakePulseMs', 'updatedAt'])) ||
+              incoming().diff(existing()).affectedKeys().hasOnly(['campaignTitle', 'theme', 'activeScene', 'activeHandout', 'interludeConfig', 'liveAudio', 'recentPublicRolls', 'shakePulseMs', 'updatedAt'])) ||
             (isCampaignMember(campaignId) &&
               incoming().diff(existing()).affectedKeys().hasOnly(['recentPublicRolls', 'updatedAt']))
           );
@@ -426,6 +461,53 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           incoming().diff(existing()).affectedKeys().hasOnly(['notes', 'updatedAt']);
         allow delete: if isVerified() && isValidId(campaignId) && isCampaignGM(campaignId);
+      }
+
+      // Live General Campaign Chat & Member Roster
+      match /live/chat {
+        allow get: if isVerified() && isValidId(campaignId) && isCampaignMember(campaignId);
+        allow list: if false;
+        allow create: if isVerified() &&
+          isValidId(campaignId) &&
+          isValidLiveChat(incoming(), campaignId) &&
+          isCampaignMember(campaignId) &&
+          incoming().gmUid == get(/databases/$(database)/documents/campaigns/$(campaignId)).data.gmUid &&
+          incoming().updatedAt == request.time;
+        allow update: if isVerified() &&
+          isValidId(campaignId) &&
+          isValidLiveChat(incoming(), campaignId) &&
+          isCampaignMember(campaignId) &&
+          incoming().campaignId == existing().campaignId &&
+          incoming().gmUid == existing().gmUid &&
+          incoming().updatedAt == request.time &&
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['messages', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['roster', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['messages', 'roster', 'updatedAt'])
+          );
+        allow delete: if isVerified() && isValidId(campaignId) && isCampaignGM(campaignId);
+      }
+
+      // Private Direct Messages between Campaign Participants
+      match /chatMessages/{messageId} {
+        allow get: if isVerified() && isValidId(campaignId) && isValidId(messageId) &&
+          (existing().gmUid == request.auth.uid ||
+            existing().senderUid == request.auth.uid ||
+            existing().recipientUid == request.auth.uid);
+        allow list: if isVerified() &&
+          (resource.data.gmUid == request.auth.uid ||
+            resource.data.senderUid == request.auth.uid ||
+            resource.data.recipientUid == request.auth.uid);
+        allow create: if isVerified() &&
+          isValidId(campaignId) && isValidId(messageId) &&
+          isValidChatMessage(incoming(), campaignId) &&
+          incoming().senderUid == request.auth.uid &&
+          incoming().createdAt == request.time &&
+          isCampaignMember(campaignId) &&
+          incoming().gmUid == get(/databases/$(database)/documents/campaigns/$(campaignId)).data.gmUid;
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(campaignId) && isValidId(messageId) &&
+          (existing().senderUid == request.auth.uid || isCampaignGM(campaignId));
       }
 
       // Cloud-Persisted Campaign Media (User Audio, Photos, PDFs)
@@ -477,7 +559,7 @@ service cloud.firestore {
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt == request.time &&
           (
-            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'category', 'imageUrl', 'mediaId', 'mediaKind', 'order', 'linkedMusicId', 'linkedAmbienceId', 'updatedAt']) ||
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'folder', 'category', 'imageUrl', 'mediaId', 'mediaKind', 'order', 'linkedMusicId', 'linkedAmbienceId', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['grid', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['fogEnabled', 'fogStrokes', 'updatedAt']) ||
             incoming().diff(existing()).affectedKeys().hasOnly(['walls', 'dynamicVision', 'updatedAt']) ||

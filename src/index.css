@@ -305,6 +305,218 @@
   mix-blend-mode: multiply;
 }
 
+/* ============================================================================
+   DUEL 3D LAYOUT STYLES (MEDIEVAL ELDER SCROLLS & STYLIZED PERSONA/JSR) + COMBOS
+   ============================================================================ */
+
+.font-duel-medieval-display {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+}
+
+.font-duel-medieval-body {
+  font-family: 'Lora', Georgia, serif;
+}
+
+.font-duel-stylized-display {
+  font-family: 'Plus Jakarta Sans', 'DM Sans', sans-serif;
+}
+
+/* Medieval parchment paper icon plaque & ornamental surface */
+.duel-medieval-plaque {
+  background:
+    radial-gradient(circle at 20% 15%, rgba(247, 238, 214, 0.96) 0%, rgba(226, 209, 174, 0.95) 68%, rgba(196, 174, 134, 0.96) 100%);
+  color: #231912;
+  border: 1px solid rgba(114, 83, 46, 0.85);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 248, 232, 0.6),
+    inset 0 0 10px rgba(92, 62, 28, 0.25),
+    0 2px 6px rgba(0, 0, 0, 0.55);
+}
+
+.duel-medieval-panel {
+  background: linear-gradient(
+    180deg,
+    rgba(24, 19, 15, 0.96) 0%,
+    rgba(16, 13, 10, 0.97) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--accent-primary) 58%, #8f7348);
+  box-shadow:
+    inset 0 0 0 1px rgba(235, 214, 174, 0.16),
+    0 14px 36px rgba(0, 0, 0, 0.78);
+}
+
+.duel-medieval-parchment-card {
+  background: linear-gradient(
+    155deg,
+    rgba(245, 236, 214, 0.97) 0%,
+    rgba(227, 211, 178, 0.96) 65%,
+    rgba(209, 188, 150, 0.97) 100%
+  );
+  color: #1f1711;
+  border: 1.5px solid rgba(94, 67, 36, 0.85);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 250, 238, 0.65),
+    inset 0 0 18px rgba(105, 74, 34, 0.2),
+    0 10px 26px rgba(0, 0, 0, 0.7);
+}
+
+/* Stylized Persona / Sunset Overdrive / Jet Set Radio dynamic graphic panels */
+.duel-stylized-panel {
+  background: #0d0d10;
+  border: 2.5px solid #fafaf9;
+  box-shadow: 6px 6px 0 var(--accent-primary), 10px 10px 0 rgba(0, 0, 0, 0.82);
+  transform: skewX(-6deg);
+}
+
+.duel-stylized-unskew {
+  transform: skewX(6deg);
+}
+
+.duel-stylized-accent-slab {
+  background: var(--accent-primary);
+  color: var(--accent-contrast);
+  border: 2.5px solid #09090b;
+  box-shadow: 5px 5px 0 #09090b;
+  transform: skewX(-10deg);
+}
+
+.duel-stylized-halftone {
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--accent-primary) 35%, transparent) 1.5px,
+    transparent 1.5px
+  );
+  background-size: 9px 9px;
+}
+
+.duel-stylized-stripes {
+  background-image: repeating-linear-gradient(
+    -35deg,
+    color-mix(in srgb, var(--accent-primary) 16%, transparent) 0px,
+    color-mix(in srgb, var(--accent-primary) 16%, transparent) 12px,
+    transparent 12px,
+    transparent 26px
+  );
+}
+
+/* Hack-and-Slash Combo Pop & Rising Flame Animations */
+@keyframes duelComboPop {
+  0% {
+    transform: scale(1.65) rotate(-8deg);
+    opacity: 0.25;
+  }
+  45% {
+    transform: scale(0.94) rotate(2deg);
+    opacity: 1;
+  }
+  72% {
+    transform: scale(1.06) rotate(-1deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+@keyframes duelFlameFlicker {
+  0%, 100% {
+    transform: scaleY(1) scaleX(1) translateY(0px);
+    opacity: 0.86;
+  }
+  33% {
+    transform: scaleY(1.16) scaleX(0.95) translateY(-4px);
+    opacity: 1;
+  }
+  66% {
+    transform: scaleY(0.92) scaleX(1.06) translateY(1px);
+    opacity: 0.78;
+  }
+}
+
+@keyframes duelFlameOverdrive {
+  0%, 100% {
+    transform: scale(1) rotate(-1.5deg);
+    filter: drop-shadow(0 0 12px rgba(249, 115, 22, 0.9)) drop-shadow(0 0 24px rgba(239, 68, 68, 0.75));
+  }
+  50% {
+    transform: scale(1.07) rotate(1.5deg);
+    filter: drop-shadow(0 0 18px rgba(251, 191, 36, 1)) drop-shadow(0 0 34px rgba(239, 68, 68, 0.95));
+  }
+}
+
+@keyframes duelEmberRise {
+  0% {
+    transform: translateY(6px) scale(0.7);
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-28px) scale(0.25);
+    opacity: 0;
+  }
+}
+
+.duel-combo-pop {
+  animation: duelComboPop 240ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.duel-flame-flicker {
+  animation: duelFlameFlicker 0.55s ease-in-out infinite;
+}
+
+.duel-flame-overdrive {
+  animation: duelFlameOverdrive 0.36s ease-in-out infinite;
+}
+
+.duel-ember-rise {
+  animation: duelEmberRise 0.85s ease-out infinite;
+}
+
+/* Persona / Turn-Based RPG Full-Body Combat Standee Subtle Organic Idle */
+@keyframes duelSpriteIdlePlayer {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scaleX(1) scaleY(1);
+  }
+  50% {
+    transform: translate3d(0, -2.5px, 0) scaleX(0.992) scaleY(1.018);
+  }
+}
+
+@keyframes duelSpriteIdleNpc {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scaleX(1) scaleY(1);
+  }
+  48% {
+    transform: translate3d(0, -3px, 0) scaleX(0.99) scaleY(1.02);
+  }
+}
+
+@keyframes duelInjuredPulse {
+  0%, 100% {
+    opacity: var(--duel-dmg-alpha, 0.35);
+  }
+  50% {
+    opacity: calc(var(--duel-dmg-alpha, 0.35) * 1.28);
+  }
+}
+
+.duel-sprite-idle-player {
+  transform-origin: bottom center;
+  will-change: transform;
+  animation: duelSpriteIdlePlayer 3.3s ease-in-out infinite;
+}
+
+.duel-sprite-idle-npc {
+  transform-origin: bottom center;
+  will-change: transform;
+  animation: duelSpriteIdleNpc 3.7s ease-in-out -1.4s infinite;
+}
+
+.duel-injured-pulse {
+  animation: duelInjuredPulse 1.5s ease-in-out infinite;
+}
+
 /* Minimalist subtle scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
@@ -326,7 +538,11 @@
 
 /* Respect reduced motion for UI chrome without killing explicit GM tabletop FX or token effects */
 @media (prefers-reduced-motion: reduce) {
-  body :not(.fx-shake-active):not(.fx-crt-scanlines):not(.fx-noise-layer):not(.fx-glitch-layer):not(.fx-glitch-bar):not(.fx-blood-vignette):not(.token-behavior-float):not(.token-behavior-pulse):not(.token-behavior-tremble):not(.token-hit-active):not(.token-spin-aura) {
+  .duel-sprite-idle-player,
+  .duel-sprite-idle-npc {
+    animation: none;
+  }
+  body :not(.fx-shake-active):not(.fx-crt-scanlines):not(.fx-noise-layer):not(.fx-glitch-layer):not(.fx-glitch-bar):not(.fx-blood-vignette):not(.token-behavior-float):not(.token-behavior-pulse):not(.token-behavior-tremble):not(.token-hit-active):not(.token-spin-aura):not(.duel-combo-pop):not(.duel-flame-flicker):not(.duel-flame-overdrive):not(.duel-ember-rise):not(.duel-injured-pulse) {
     transition-duration: 0.01ms;
   }
 }

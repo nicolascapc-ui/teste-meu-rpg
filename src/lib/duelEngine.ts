@@ -1,6 +1,7 @@
 import { buildAutoItemFormula } from './diceEngine';
 import { resolveMediaUrl } from './mediaStore';
 import type {
+  ActiveDuelState,
   CharacterSheet,
   CustomDuelArenaPreset,
   DuelActionItem,
@@ -8,7 +9,9 @@ import type {
   DuelAttackSfxMap,
   DuelCombatantState,
   DuelCustomSfxEntry,
+  DuelExtraSettings,
   DuelParticleKind,
+  DuelStatusTagTone,
   Scene,
   SceneDuelConfig,
   SceneToken,
@@ -230,6 +233,123 @@ export function getDuelArenaPreset(
 const DUEL_CFG_STORAGE_PREFIX = 'folio_scene_duel_cfg_v1';
 const CAMPAIGN_ATTACK_SFX_PREFIX = 'folio_duel_attack_sfx_v1';
 const CAMPAIGN_ACTION_SFX_PREFIX = 'folio_duel_action_sfx_v1';
+const CAMPAIGN_DUEL_EXTRAS_PREFIX = 'folio_duel_extras_v1';
+const CAMPAIGN_DUELS_BY_SCENE_PREFIX = 'folio_duels_by_scene_v1';
+
+export const DEFAULT_DUEL_EXTRA_SETTINGS: DuelExtraSettings = {
+  layoutStyle: 'minimal',
+  comboEnabled: true,
+  mouseAttackDamageEnabled: true,
+  mouseAttackDamage: 1,
+  showSecondaryResource: false,
+  secondaryResourceLabel: 'MP',
+  showStatusTags: false,
+};
+
+export const DUEL_STATUS_PRESETS: Array<{ label: string; tone: DuelStatusTagTone }> = [
+  { label: 'Queimando', tone: 'danger' },
+  { label: 'Sangrando', tone: 'danger' },
+  { label: 'Envenenado', tone: 'danger' },
+  { label: 'Atordoado', tone: 'warning' },
+  { label: 'Caído', tone: 'warning' },
+  { label: 'Vulnerável', tone: 'warning' },
+  { label: 'Focado', tone: 'info' },
+  { label: 'Concentrado', tone: 'info' },
+  { label: 'Protegido', tone: 'buff' },
+  { label: 'Inspirado', tone: 'buff' },
+];
+
+export function resolveDuelExtraSettings(
+  settings?: Partial<DuelExtraSettings> | null
+): DuelExtraSettings {
+  const rawDamage = Number(settings?.mouseAttackDamage);
+  return {
+    layoutStyle:
+      settings?.layoutStyle === 'medieval' || settings?.layoutStyle === 'stylized'
+        ? settings.layoutStyle
+        : 'minimal',
+    comboEnabled:
+      typeof settings?.comboEnabled === 'boolean'
+        ? settings.comboEnabled
+        : DEFAULT_DUEL_EXTRA_SETTINGS.comboEnabled,
+    mouseAttackDamageEnabled:
+      typeof settings?.mouseAttackDamageEnabled === 'boolean'
+        ? settings.mouseAttackDamageEnabled
+        : DEFAULT_DUEL_EXTRA_SETTINGS.mouseAttackDamageEnabled,
+    mouseAttackDamage:
+      Number.isFinite(rawDamage) && rawDamage >= 1 ? Math.min(999, Math.round(rawDamage)) : 1,
+    showSecondaryResource: Boolean(settings?.showSecondaryResource),
+    secondaryResourceLabel:
+      typeof settings?.secondaryResourceLabel === 'string' &&
+      settings.secondaryResourceLabel.trim().length > 0
+        ? settings.secondaryResourceLabel.trim().slice(0, 16)
+        : 'MP',
+    showStatusTags: Boolean(settings?.showStatusTags),
+  };
+}
+
+export function loadCampaignDuelExtraSettings(campaignId: string): DuelExtraSettings {
+  if (!campaignId || typeof window === 'undefined') return { ...DEFAULT_DUEL_EXTRA_SETTINGS };
+  try {
+    const raw = window.localStorage.getItem(`${CAMPAIGN_DUEL_EXTRAS_PREFIX}_${campaignId}`);
+    if (!raw) return { ...DEFAULT_DUEL_EXTRA_SETTINGS };
+    return resolveDuelExtraSettings(JSON.parse(raw) as Partial<DuelExtraSettings>);
+  } catch {
+    return { ...DEFAULT_DUEL_EXTRA_SETTINGS };
+  }
+}
+
+export function saveCampaignDuelExtraSettings(
+  campaignId: string,
+  settings: DuelExtraSettings
+): DuelExtraSettings {
+  const clean = resolveDuelExtraSettings(settings);
+  if (campaignId && typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(
+        `${CAMPAIGN_DUEL_EXTRAS_PREFIX}_${campaignId}`,
+        JSON.stringify(clean)
+      );
+    } catch {
+      // ignore quota
+    }
+  }
+  return clean;
+}
+
+export function loadCampaignDuelsByScene(campaignId: string): Record<string, ActiveDuelState> {
+  if (!campaignId || typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(`${CAMPAIGN_DUELS_BY_SCENE_PREFIX}_${campaignId}`);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const valid: Record<string, ActiveDuelState> = {};
+    for (const [sceneId, duel] of Object.entries(parsed as Record<string, ActiveDuelState>)) {
+      if (duel && typeof duel === 'object' && duel.sceneId === sceneId && duel.player && duel.npc) {
+        valid[sceneId] = duel;
+      }
+    }
+    return valid;
+  } catch {
+    return {};
+  }
+}
+
+export function saveCampaignDuelsByScene(
+  campaignId: string,
+  map: Record<string, ActiveDuelState>
+): void {
+  if (!campaignId || typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      `${CAMPAIGN_DUELS_BY_SCENE_PREFIX}_${campaignId}`,
+      JSON.stringify(map)
+    );
+  } catch {
+    // ignore quota
+  }
+}
 
 export function loadCampaignAttackSfx(campaignId: string): DuelAttackSfxMap {
   if (!campaignId || typeof window === 'undefined') return {};
@@ -609,6 +729,8 @@ export function buildCombatantFromTokenAndSheets(
     role,
     imageUrl: token.imageUrl || sheet?.avatarUrl || '',
     mediaId: token.mediaId || sheet?.avatarMediaId || '',
+    combatSpriteUrl: token.combatSpriteUrl || '',
+    combatSpriteMediaId: token.combatSpriteMediaId || '',
     color: token.outlineColor || token.color || (role === 'player' ? '#2f5d46' : '#8f2d2d'),
     hpCurrent,
     hpMax,

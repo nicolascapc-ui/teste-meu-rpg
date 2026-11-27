@@ -3,12 +3,18 @@ import {
   ArrowDown,
   ArrowUp,
   Camera,
+  ChevronDown,
+  ChevronRight,
   Copy,
   Dices,
+  Eye,
+  EyeOff,
   FileText,
   FileUp,
+  GripVertical,
   Layers,
   Loader2,
+  Maximize2,
   Minus,
   Plus,
   SlidersHorizontal,
@@ -16,6 +22,7 @@ import {
   Swords,
   Trash2,
   Upload,
+  X,
   Zap,
 } from 'lucide-react';
 import type { CharacterSheet, SheetBlock, SheetBlockType } from '../types/vtt';
@@ -43,6 +50,7 @@ export interface CreateSheetPayload {
 interface CharacterSheetPanelProps {
   uploadContext: CampaignUploadContext;
   sheets: CharacterSheet[];
+  canDragToCanvas?: boolean;
   onCreateSheet: (payload: CreateSheetPayload) => Promise<string>;
   onUpdateSheet: (sheet: CharacterSheet) => Promise<void>;
   onDeleteSheet: (sheetId: string) => Promise<void>;
@@ -168,6 +176,7 @@ function buildStarterBlocksForPreset(
 export function CharacterSheetPanel({
   uploadContext,
   sheets,
+  canDragToCanvas = false,
   onCreateSheet,
   onUpdateSheet,
   onDeleteSheet,
@@ -176,6 +185,14 @@ export function CharacterSheetPanel({
 }: CharacterSheetPanelProps) {
   const [selectedId, setSelectedId] = useState<string>(sheets[0]?.id || '');
   const [showNewDrawer, setShowNewDrawer] = useState(false);
+  const [showA4Modal, setShowA4Modal] = useState(false);
+
+  // Progressive disclosure: collapsible sub-sections & quick section visibility toggles
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+  const [hiddenSections, setHiddenSections] = useState<Record<string, boolean>>({});
+  const [showSectionFilterBar, setShowSectionFilterBar] = useState(false);
+  const [showQuickTools, setShowQuickTools] = useState(false);
+  const [showAddBlockMenu, setShowAddBlockMenu] = useState(false);
 
   // Blank / Custom System sheet creator form
   const [newName, setNewName] = useState('');
@@ -617,583 +634,423 @@ export function CharacterSheetPanel({
     }
   }
 
-  return (
-    <div className="h-full flex flex-col">
-      {/* Sheet selector + Create button */}
-      <div className="p-3 border-b vtt-border flex items-center gap-2 vtt-subtle">
-        <select
-          value={activeSheet?.id || ''}
-          onChange={(e) => setSelectedId(e.target.value)}
-          className="flex-1 px-2.5 py-2 text-xs border vtt-border vtt-surface min-w-0"
-          aria-label="Selecionar ficha"
-        >
-          {sheets.length === 0 && <option value="">Nenhuma ficha criada</option>}
-          {sheets.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name} {s.templateId ? `· ${s.templateId}` : ''}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={() => setShowNewDrawer((v) => !v)}
-          className="px-3 py-2 text-xs font-semibold vtt-accent-btn flex items-center gap-1 whitespace-nowrap shrink-0"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          Nova
-        </button>
-      </div>
+  function toggleSectionCollapsed(section: string) {
+    setCollapsedSections((prev) => ({ ...prev, [section]: !prev[section] }));
+  }
 
-      {/* Universal Custom RPG Sheet Builder & PDF Importer Drawer */}
-      {showNewDrawer && (
-        <div className="p-4 border-b vtt-border vtt-canvas space-y-4 overflow-y-auto max-h-[80vh]">
-          {/* Option 1: Smart Custom RPG System Sheet Builder */}
-          <form onSubmit={handleCreateBlank} className="space-y-3 border vtt-border vtt-surface p-3.5">
-            <p className="text-xs font-bold font-typewriter">
-              Criar Ficha de Sistema Personalizado
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <input
-                type="text"
-                required
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                maxLength={100}
-                placeholder="Nome do personagem"
-                className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
-              />
-              <input
-                type="text"
-                value={newSystem}
-                onChange={(e) => setNewSystem(e.target.value)}
-                maxLength={80}
-                placeholder="Nome do sistema (ex: Meu RPG)"
-                className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
-              />
-            </div>
+  function toggleSectionHidden(section: string) {
+    setHiddenSections((prev) => ({ ...prev, [section]: !prev[section] }));
+  }
 
-            <div className="space-y-1.5">
-              <span className="text-[11px] font-semibold block">
-                Como funcionam os dados do seu sistema?
-              </span>
-              <div className="grid grid-cols-2 gap-1.5">
-                {SYSTEM_DICE_PRESETS.map((preset) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => {
-                      setNewSystemPreset(preset.id);
-                      if (preset.id === '1d100') {
-                        setNewAttrsCsv('Força, Destreza, Inteligência, Poder, Investigação');
-                      }
-                    }}
-                    className={`p-2 text-left border transition-colors ${
-                      newSystemPreset === preset.id
-                        ? 'vtt-accent-btn border-transparent'
-                        : 'vtt-canvas vtt-border'
-                    }`}
-                  >
-                    <p className="text-[11px] font-semibold">{preset.label}</p>
-                    <p
-                      className={`text-[10px] truncate ${
-                        newSystemPreset === preset.id ? 'opacity-90' : 'vtt-muted'
-                      }`}
-                    >
-                      {preset.shortDesc}
-                    </p>
-                  </button>
-                ))}
-              </div>
-            </div>
+  function handleDragPortraitToCanvas(e: React.DragEvent) {
+    if (!activeSheet || !canDragToCanvas) return;
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData(
+      'application/x-folio-sheet-token',
+      JSON.stringify({
+        sheetId: activeSheet.id,
+        name: activeSheet.name,
+        layerKind: 'token',
+        tokenCategory: 'player',
+        shape: 'circle',
+        imageUrl: activeSheet.avatarUrl || '',
+        mediaId: activeSheet.avatarMediaId || '',
+        notes: activeSheet.subtitle || '',
+        sizePx: 58,
+        widthPx: 58,
+        heightPx: 58,
+        color: '#2f5d46',
+        outlineStyle: 'solid',
+        outlineColor: '#2f5d46',
+      })
+    );
+  }
 
-            <label className="block space-y-1">
-              <span className="text-[11px] font-semibold">
-                Atributos iniciais (separados por vírgula)
-              </span>
-              <input
-                type="text"
-                value={newAttrsCsv}
-                onChange={(e) => setNewAttrsCsv(e.target.value)}
-                placeholder="Força, Agilidade, Intelecto, Vigor, Presença"
-                className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
-              />
-            </label>
+  function renderActiveSheetBody(isA4View: boolean) {
+    if (!activeSheet) return null;
 
-            <div className="flex items-center justify-between gap-2 pt-1">
-              {activeSheet ? (
-                <button
-                  type="button"
-                  onClick={() => void handleDuplicateCurrent()}
-                  className="px-3 py-1.5 text-xs border vtt-border vtt-canvas flex items-center gap-1.5"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  Duplicar atual
-                </button>
-              ) : (
-                <span />
-              )}
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowNewDrawer(false)}
-                  className="px-3 py-1.5 text-xs border vtt-border"
-                >
-                  Fechar
-                </button>
-                <button
-                  type="submit"
-                  disabled={!newName.trim() || importingPdf}
-                  className="px-4 py-1.5 text-xs font-semibold vtt-accent-btn disabled:opacity-50"
-                >
-                  Criar ficha pronta
-                </button>
-              </div>
-            </div>
-          </form>
-
-          {/* Option 2: Smart PDF Import */}
-          <div className="border vtt-border vtt-surface p-3 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 vtt-accent-text shrink-0" />
-                <span className="text-xs font-semibold">Ou importar PDF (auto-montar)</span>
-              </div>
-              <label className="py-1.5 px-3 text-xs font-semibold border vtt-border vtt-canvas hover:vtt-subtle cursor-pointer flex items-center gap-1.5 whitespace-nowrap">
-                {importingPdf ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>{importStatus || 'Lendo...'}</span>
-                  </>
-                ) : (
-                  <>
-                    <FileUp className="w-3.5 h-3.5" />
-                    <span>Escolher PDF</span>
-                  </>
-                )}
+    if (activeSheet.mode === 'pdf') {
+      return (
+        <div className="space-y-3 h-full flex flex-col">
+          <div className="grid grid-cols-1 gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="px-3.5 py-2 text-xs font-semibold vtt-accent-btn cursor-pointer flex items-center gap-1.5 whitespace-nowrap">
+                <Sparkles className="w-3.5 h-3.5" />
+                {uploadingPdf ? 'Lendo PDF...' : 'Enviar PDF e Auto-montar Blocos'}
                 <input
                   type="file"
                   accept="application/pdf"
                   className="hidden"
-                  disabled={importingPdf}
+                  disabled={uploadingPdf}
                   onChange={(e) => {
-                    void handleSmartPdfImport(e.target.files?.[0]);
+                    void handlePdfUploadToActive(e.target.files?.[0], true);
                     e.target.value = '';
                   }}
                 />
               </label>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Active Sheet Content */}
-      {!activeSheet ? (
-        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4">
-          <FileText className="w-8 h-8 vtt-muted" />
-          <div className="space-y-1.5 max-w-xs">
-            <p className="text-sm font-bold font-typewriter">Fichas Universais</p>
-            <p className="text-xs vtt-muted leading-relaxed">
-              Crie fichas para qualquer sistema personalizado com itens que rolam automaticamente com base nos seus atributos, ou importe um PDF.
-            </p>
-          </div>
-          <div className="flex flex-col sm:flex-row items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setShowNewDrawer(true)}
-              className="px-4 py-2.5 text-xs font-semibold vtt-accent-btn"
-            >
-              Criar ficha personalizada
-            </button>
-            <label className="px-4 py-2.5 text-xs font-semibold border vtt-border vtt-surface cursor-pointer flex items-center gap-1.5">
-              {importingPdf ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  {importStatus || 'Lendo PDF...'}
-                </>
-              ) : (
-                <>
-                  <FileUp className="w-3.5 h-3.5" />
-                  Importar PDF
-                </>
-              )}
-              <input
-                type="file"
-                accept="application/pdf"
-                className="hidden"
-                disabled={importingPdf}
-                onChange={(e) => {
-                  void handleSmartPdfImport(e.target.files?.[0]);
-                  e.target.value = '';
-                }}
-              />
-            </label>
-          </div>
-        </div>
-      ) : (
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {/* Character Header with Local Portrait Photo Upload */}
-          <div className="space-y-3 border-b vtt-border pb-3.5">
-            <div className="flex items-start gap-3">
-              <label
-                className="relative w-14 h-14 border vtt-border vtt-subtle shrink-0 overflow-hidden cursor-pointer group flex items-center justify-center"
-                title="Enviar foto do personagem"
-              >
-                {avatarResolvedUrl ? (
-                  <img
-                    src={avatarResolvedUrl}
-                    alt={activeSheet.name}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <Camera className="w-5 h-5 vtt-muted group-hover:opacity-100" />
-                )}
-                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                  <Upload className="w-4 h-4 text-white" />
-                </div>
+              <label className="px-3 py-2 text-xs border vtt-border vtt-surface cursor-pointer flex items-center gap-1.5 whitespace-nowrap">
+                <Upload className="w-3.5 h-3.5" />
+                Só anexar PDF
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="application/pdf"
                   className="hidden"
-                  disabled={uploadingAvatar}
+                  disabled={uploadingPdf}
                   onChange={(e) => {
-                    void handleAvatarUpload(e.target.files?.[0]);
+                    void handlePdfUploadToActive(e.target.files?.[0], false);
                     e.target.value = '';
                   }}
                 />
               </label>
-
-              <div className="flex-1 space-y-1 min-w-0">
-                <input
-                  type="text"
-                  value={activeSheet.name}
-                  onChange={(e) => patchSheet({ ...activeSheet, name: e.target.value })}
-                  className="w-full text-base font-bold font-typewriter bg-transparent border-b border-transparent focus:border-current pb-0.5"
-                />
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={activeSheet.subtitle}
-                    onChange={(e) => patchSheet({ ...activeSheet, subtitle: e.target.value })}
-                    placeholder="Classe, arquétipo ou origem"
-                    className="flex-1 text-xs vtt-muted bg-transparent border-b border-transparent focus:border-current min-w-0"
-                  />
-                  <input
-                    type="text"
-                    value={activeSheet.templateId || ''}
-                    onChange={(e) => patchSheet({ ...activeSheet, templateId: e.target.value })}
-                    placeholder="Sistema"
-                    className="w-28 text-[11px] vtt-muted text-right bg-transparent border-b border-transparent focus:border-current shrink-0"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => void onDeleteSheet(activeSheet.id)}
-                className="p-1.5 vtt-muted hover:text-red-700 shrink-0"
-                title="Excluir ficha"
-                aria-label="Excluir ficha"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
             </div>
 
-            <div className="flex items-center gap-1 p-1 vtt-subtle border vtt-border">
-              <button
-                type="button"
-                onClick={() => patchSheet({ ...activeSheet, mode: 'modular' })}
-                className={`flex-1 py-1.5 text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                  activeSheet.mode === 'modular' ? 'vtt-accent-btn' : 'vtt-muted'
-                }`}
-              >
-                <Layers className="w-3.5 h-3.5" />
-                Ficha Interativa
-              </button>
-              <button
-                type="button"
-                onClick={() => patchSheet({ ...activeSheet, mode: 'pdf' })}
-                className={`flex-1 py-1.5 text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap ${
-                  activeSheet.mode === 'pdf' ? 'vtt-accent-btn' : 'vtt-muted'
-                }`}
-              >
-                <FileText className="w-3.5 h-3.5" />
-                PDF Original
-              </button>
-            </div>
+            <input
+              type="text"
+              value={activeSheet.pdfUrl}
+              onChange={(e) =>
+                patchSheet({
+                  ...activeSheet,
+                  pdfUrl: e.target.value,
+                  pdfFileName: e.target.value ? 'PDF externo' : '',
+                })
+              }
+              placeholder="Ou cole o link direto de um PDF (opcional)"
+              className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
+            />
           </div>
 
-          {activeSheet.mode === 'pdf' ? (
-            <div className="space-y-3">
-              <div className="grid grid-cols-1 gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="px-3.5 py-2 text-xs font-semibold vtt-accent-btn cursor-pointer flex items-center gap-1.5 whitespace-nowrap">
-                    <Sparkles className="w-3.5 h-3.5" />
-                    {uploadingPdf ? 'Lendo PDF...' : 'Enviar PDF e Auto-montar Blocos'}
-                    <input
-                      type="file"
-                      accept="application/pdf"
-                      className="hidden"
-                      disabled={uploadingPdf}
-                      onChange={(e) => {
-                        void handlePdfUploadToActive(e.target.files?.[0], true);
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
-                  <label className="px-3 py-2 text-xs border vtt-border vtt-surface cursor-pointer flex items-center gap-1.5 whitespace-nowrap">
-                    <Upload className="w-3.5 h-3.5" />
-                    Só anexar PDF
-                    <input
-                      type="file"
-                      accept="application/pdf"
-                      className="hidden"
-                      disabled={uploadingPdf}
-                      onChange={(e) => {
-                        void handlePdfUploadToActive(e.target.files?.[0], false);
-                        e.target.value = '';
-                      }}
-                    />
-                  </label>
-                </div>
-
-                <input
-                  type="text"
-                  value={activeSheet.pdfUrl}
-                  onChange={(e) =>
-                    patchSheet({
-                      ...activeSheet,
-                      pdfUrl: e.target.value,
-                      pdfFileName: e.target.value ? 'PDF externo' : '',
-                    })
-                  }
-                  placeholder="Ou cole o link direto de um PDF (opcional)"
-                  className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
-                />
+          {pdfResolvedUrl ? (
+            <div className="space-y-2 flex-1 flex flex-col min-h-0">
+              <div className="flex items-center justify-between text-xs vtt-muted shrink-0">
+                <span className="truncate">{activeSheet.pdfFileName || 'Ficha PDF'}</span>
+                <a
+                  href={pdfResolvedUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline whitespace-nowrap shrink-0"
+                >
+                  Abrir em nova aba
+                </a>
               </div>
-
-              {pdfResolvedUrl ? (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs vtt-muted">
-                    <span className="truncate">{activeSheet.pdfFileName || 'Ficha PDF'}</span>
-                    <a
-                      href={pdfResolvedUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="underline whitespace-nowrap shrink-0"
-                    >
-                      Abrir em nova aba
-                    </a>
-                  </div>
-                  <iframe
-                    src={pdfResolvedUrl}
-                    title={`PDF de ${activeSheet.name}`}
-                    className="w-full h-[520px] border vtt-border bg-white"
-                  />
-                </div>
-              ) : (
-                <div className="border vtt-border p-8 text-center space-y-2 vtt-canvas">
-                  <FileText className="w-7 h-7 mx-auto vtt-muted" />
-                  <p className="text-xs font-semibold">Nenhum PDF anexado</p>
-                  <p className="text-[11px] vtt-muted">
-                    Envie o PDF da ficha do seu sistema para consultá-lo aqui ou convertê-lo em blocos interativos com botões de rolagem.
-                  </p>
-                </div>
-              )}
+              <iframe
+                src={pdfResolvedUrl}
+                title={`PDF de ${activeSheet.name}`}
+                className={`w-full border vtt-border bg-white ${
+                  isA4View ? 'flex-1 min-h-[68vh]' : 'h-[520px]'
+                }`}
+              />
             </div>
           ) : (
-            <div className="space-y-5">
-              {/* Quick Action Bar: + Item Customizado & + Atributo Rápido */}
-              <div className="space-y-2">
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setShowItemCreator((v) => !v)}
-                    className="flex-1 py-2 px-3 text-xs font-semibold vtt-accent-btn flex items-center justify-center gap-1.5 whitespace-nowrap"
-                  >
-                    <Swords className="w-3.5 h-3.5" />
-                    + Item / Habilidade com Atributo
-                  </button>
-                </div>
+            <div className="border vtt-border p-8 text-center space-y-2 vtt-canvas">
+              <FileText className="w-7 h-7 mx-auto vtt-muted" />
+              <p className="text-xs font-semibold">Nenhum PDF anexado</p>
+              <p className="text-[11px] vtt-muted">
+                Envie o PDF da ficha do seu sistema para consultá-lo aqui ou convertê-lo em blocos interativos com botões de rolagem.
+              </p>
+            </div>
+          )}
+        </div>
+      );
+    }
 
-                {/* Visual Custom Item / Skill Creator (No manual formula writing needed!) */}
-                {showItemCreator && (
-                  <form
-                    onSubmit={handleCreateCustomItem}
-                    className="border vtt-border p-3.5 vtt-canvas space-y-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold font-typewriter flex items-center gap-1.5">
-                        <Swords className="w-3.5 h-3.5 vtt-accent-text" />
-                        Novo Item, Arma ou Habilidade
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setShowItemCreator(false)}
-                        className="text-[11px] vtt-muted"
-                      >
-                        Fechar
-                      </button>
-                    </div>
+    const visibleGroups = groupedBlocks.filter((g) => !hiddenSections[g.section]);
 
-                    <input
-                      type="text"
-                      required
-                      value={itemName}
-                      onChange={(e) => setItemName(e.target.value)}
-                      placeholder="Nome (ex: Espada Longa, Revólver, Feitiço, Furtividade)"
-                      className="w-full px-3 py-2 text-xs border vtt-border vtt-surface"
-                    />
+    return (
+      <div className="space-y-4">
+        {/* Compact Sub-bar: Section Visibility Toggles & Quick Add Collapsible */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-1.5 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setShowQuickTools((v) => !v)}
+              className="px-2.5 py-1.5 text-[11px] font-semibold vtt-accent-btn flex items-center gap-1.5 whitespace-nowrap"
+            >
+              {showQuickTools ? (
+                <ChevronDown className="w-3.5 h-3.5" />
+              ) : (
+                <ChevronRight className="w-3.5 h-3.5" />
+              )}
+              <Swords className="w-3 h-3" />
+              + Item / Atributo
+            </button>
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="space-y-1">
-                        <span className="text-[11px] font-semibold block">
-                          Rolar com Atributo
-                        </span>
-                        <select
-                          value={itemAttr1}
-                          onChange={(e) => setItemAttr1(e.target.value)}
-                          className="w-full px-2 py-2 text-xs border vtt-border vtt-surface"
-                        >
-                          <option value="">Sem atributo</option>
-                          {sheetAttributes.map((attr) => (
-                            <option key={attr.id} value={attr.label}>
-                              {attr.label} ({attr.value ?? 0})
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+            <button
+              type="button"
+              onClick={() => setShowSectionFilterBar((v) => !v)}
+              className={`px-2.5 py-1.5 text-[11px] border flex items-center gap-1 whitespace-nowrap ${
+                showSectionFilterBar
+                  ? 'vtt-subtle border-amber-500/60 font-semibold'
+                  : 'vtt-border vtt-canvas vtt-muted hover:opacity-100'
+              }`}
+              title="Escolher quais seções da ficha ficam visíveis"
+            >
+              <SlidersHorizontal className="w-3 h-3" />
+              Seções ({visibleGroups.length}/{groupedBlocks.length})
+              {showSectionFilterBar ? (
+                <ChevronDown className="w-3 h-3" />
+              ) : (
+                <ChevronRight className="w-3 h-3" />
+              )}
+            </button>
+          </div>
 
-                      <label className="space-y-1">
-                        <span className="text-[11px] font-semibold block">
-                          2º Atributo / Perícia (opc.)
-                        </span>
-                        <select
-                          value={itemAttr2}
-                          onChange={(e) => setItemAttr2(e.target.value)}
-                          className="w-full px-2 py-2 text-xs border vtt-border vtt-surface"
-                        >
-                          <option value="">Nenhum</option>
-                          {sheetAttributes.map((attr) => (
-                            <option key={attr.id} value={attr.label}>
-                              + {attr.label} ({attr.value ?? 0})
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2">
-                      <label className="col-span-2 space-y-1">
-                        <span className="text-[11px] font-semibold block">Regra do Dado</span>
-                        <select
-                          value={itemDice}
-                          onChange={(e) => setItemDice(e.target.value)}
-                          className="w-full px-2 py-2 text-xs border vtt-border vtt-surface"
-                        >
-                          {ITEM_DICE_OPTIONS.map((opt) => (
-                            <option key={opt.id} value={opt.id}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-
-                      <label className="space-y-1">
-                        <span className="text-[11px] font-semibold block">Bônus Extra</span>
-                        <input
-                          type="number"
-                          value={itemBonus}
-                          onChange={(e) => setItemBonus(Number(e.target.value))}
-                          className="w-full px-2 py-2 text-xs border vtt-border vtt-surface text-center tabular-nums"
-                        />
-                      </label>
-                    </div>
-
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-semibold">
-                          Rolagem de Dano / Efeito (opcional)
-                        </span>
-                        {sheetAttributes.length > 0 && (
-                          <div className="flex items-center gap-1 overflow-x-auto">
-                            {sheetAttributes.slice(0, 3).map((a) => (
-                              <button
-                                key={a.id}
-                                type="button"
-                                onClick={() =>
-                                  setItemDamage((prev) =>
-                                    prev ? `${prev} + {${a.label}}` : `1d8 + {${a.label}}`
-                                  )
-                                }
-                                className="px-1.5 py-0.5 text-[10px] border vtt-border vtt-surface whitespace-nowrap"
-                                title={`Somar ${a.label} no dano`}
-                              >
-                                + {a.label}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <input
-                        type="text"
-                        value={itemDamage}
-                        onChange={(e) => setItemDamage(e.target.value)}
-                        placeholder="Ex: 1d8 + {Força} ou 2d6"
-                        className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface font-mono"
-                      />
-                    </div>
-
-                    <input
-                      type="text"
-                      value={itemNotes}
-                      onChange={(e) => setItemNotes(e.target.value)}
-                      placeholder="Notas curtas (ex: Alcance médio, crítico 19-20)"
-                      className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-surface"
-                    />
-
+          {/* Toggleable Section Visibility Pills */}
+          {showSectionFilterBar && groupedBlocks.length > 0 && (
+            <div className="p-2.5 border vtt-border vtt-canvas space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase tracking-wider font-semibold vtt-muted">
+                  Mostrar / Ocultar Subabas da Ficha
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHiddenSections({});
+                    setCollapsedSections({});
+                  }}
+                  className="text-[10px] vtt-accent-text hover:underline"
+                >
+                  Mostrar todas
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {groupedBlocks.map((g) => {
+                  const isHidden = Boolean(hiddenSections[g.section]);
+                  return (
                     <button
-                      type="submit"
-                      disabled={!itemName.trim()}
-                      className="w-full py-2 text-xs font-semibold vtt-accent-btn disabled:opacity-50"
+                      key={g.section}
+                      type="button"
+                      onClick={() => toggleSectionHidden(g.section)}
+                      className={`px-2 py-1 text-[11px] border flex items-center gap-1 transition-colors ${
+                        isHidden
+                          ? 'vtt-canvas vtt-border vtt-muted opacity-55 line-through'
+                          : 'vtt-surface vtt-border font-semibold'
+                      }`}
                     >
-                      Adicionar à Ficha
+                      {isHidden ? (
+                        <EyeOff className="w-3 h-3" />
+                      ) : (
+                        <Eye className="w-3 h-3 vtt-accent-text" />
+                      )}
+                      <span>{g.section}</span>
+                      <span className="text-[10px] vtt-muted tabular-nums">({g.items.length})</span>
                     </button>
-                  </form>
-                )}
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
-                {/* Quick 1-Line Add Attribute Form */}
-                <form onSubmit={handleQuickAddAttribute} className="flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    value={quickAttrName}
-                    onChange={(e) => setQuickAttrName(e.target.value)}
-                    placeholder="Novo atributo rápido (ex: Destreza, Luta)..."
-                    className="flex-1 min-w-0 px-2.5 py-1.5 text-xs border vtt-border vtt-canvas"
-                  />
-                  <input
-                    type="number"
-                    value={quickAttrVal}
-                    onChange={(e) => setQuickAttrVal(Number(e.target.value))}
-                    className="w-14 px-2 py-1.5 text-xs text-center tabular-nums border vtt-border vtt-canvas"
-                    title="Valor do atributo"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!quickAttrName.trim()}
-                    className="px-2.5 py-1.5 text-xs font-semibold border vtt-border vtt-surface hover:vtt-subtle disabled:opacity-40 whitespace-nowrap shrink-0"
-                  >
-                    + Atributo
-                  </button>
-                </form>
+          {/* Collapsible Quick Item / Attribute Creator */}
+          {showQuickTools && (
+            <div className="space-y-2 border vtt-border p-3 vtt-canvas">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowItemCreator((v) => !v)}
+                  className="flex-1 py-2 px-3 text-xs font-semibold vtt-accent-btn flex items-center justify-center gap-1.5 whitespace-nowrap"
+                >
+                  <Swords className="w-3.5 h-3.5" />
+                  {showItemCreator ? 'Ocultar criador de item' : '+ Novo Item / Habilidade com Atributo'}
+                </button>
               </div>
 
-              {groupedBlocks.map((group) => (
-                <section key={group.section} className="space-y-2.5">
-                  <h4 className="text-[11px] font-bold uppercase tracking-wider vtt-muted border-b vtt-border pb-1">
-                    {group.section}
-                  </h4>
+              {showItemCreator && (
+                <form
+                  onSubmit={handleCreateCustomItem}
+                  className="border vtt-border p-3 vtt-surface space-y-2.5"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold font-typewriter flex items-center gap-1.5">
+                      <Swords className="w-3.5 h-3.5 vtt-accent-text" />
+                      Novo Item, Arma ou Habilidade
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowItemCreator(false)}
+                      className="text-[11px] vtt-muted"
+                    >
+                      Fechar
+                    </button>
+                  </div>
 
-                  <div className="space-y-2.5">
+                  <input
+                    type="text"
+                    required
+                    value={itemName}
+                    onChange={(e) => setItemName(e.target.value)}
+                    placeholder="Nome (ex: Espada Longa, Revólver, Feitiço, Furtividade)"
+                    className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
+                  />
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="space-y-1">
+                      <span className="text-[11px] font-semibold block">Rolar com Atributo</span>
+                      <select
+                        value={itemAttr1}
+                        onChange={(e) => setItemAttr1(e.target.value)}
+                        className="w-full px-2 py-2 text-xs border vtt-border vtt-canvas"
+                      >
+                        <option value="">Sem atributo</option>
+                        {sheetAttributes.map((attr) => (
+                          <option key={attr.id} value={attr.label}>
+                            {attr.label} ({attr.value ?? 0})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="space-y-1">
+                      <span className="text-[11px] font-semibold block">
+                        2º Atributo / Perícia (opc.)
+                      </span>
+                      <select
+                        value={itemAttr2}
+                        onChange={(e) => setItemAttr2(e.target.value)}
+                        className="w-full px-2 py-2 text-xs border vtt-border vtt-canvas"
+                      >
+                        <option value="">Nenhum</option>
+                        {sheetAttributes.map((attr) => (
+                          <option key={attr.id} value={attr.label}>
+                            + {attr.label} ({attr.value ?? 0})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <label className="col-span-2 space-y-1">
+                      <span className="text-[11px] font-semibold block">Regra do Dado</span>
+                      <select
+                        value={itemDice}
+                        onChange={(e) => setItemDice(e.target.value)}
+                        className="w-full px-2 py-2 text-xs border vtt-border vtt-canvas"
+                      >
+                        {ITEM_DICE_OPTIONS.map((opt) => (
+                          <option key={opt.id} value={opt.id}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="space-y-1">
+                      <span className="text-[11px] font-semibold block">Bônus Extra</span>
+                      <input
+                        type="number"
+                        value={itemBonus}
+                        onChange={(e) => setItemBonus(Number(e.target.value))}
+                        className="w-full px-2 py-2 text-xs border vtt-border vtt-canvas text-center tabular-nums"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold">
+                        Rolagem de Dano / Efeito (opcional)
+                      </span>
+                      {sheetAttributes.length > 0 && (
+                        <div className="flex items-center gap-1 overflow-x-auto">
+                          {sheetAttributes.slice(0, 3).map((a) => (
+                            <button
+                              key={a.id}
+                              type="button"
+                              onClick={() =>
+                                setItemDamage((prev) =>
+                                  prev ? `${prev} + {${a.label}}` : `1d8 + {${a.label}}`
+                                )
+                              }
+                              className="px-1.5 py-0.5 text-[10px] border vtt-border vtt-canvas whitespace-nowrap"
+                              title={`Somar ${a.label} no dano`}
+                            >
+                              + {a.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      value={itemDamage}
+                      onChange={(e) => setItemDamage(e.target.value)}
+                      placeholder="Ex: 1d8 + {Força} ou 2d6"
+                      className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-canvas font-mono"
+                    />
+                  </div>
+
+                  <input
+                    type="text"
+                    value={itemNotes}
+                    onChange={(e) => setItemNotes(e.target.value)}
+                    placeholder="Notas curtas (ex: Alcance médio, crítico 19-20)"
+                    className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-canvas"
+                  />
+
+                  <button
+                    type="submit"
+                    disabled={!itemName.trim()}
+                    className="w-full py-2 text-xs font-semibold vtt-accent-btn disabled:opacity-50"
+                  >
+                    Adicionar à Ficha
+                  </button>
+                </form>
+              )}
+
+              {/* Quick 1-Line Add Attribute Form */}
+              <form onSubmit={handleQuickAddAttribute} className="flex items-center gap-1.5">
+                <input
+                  type="text"
+                  value={quickAttrName}
+                  onChange={(e) => setQuickAttrName(e.target.value)}
+                  placeholder="Novo atributo rápido (ex: Destreza, Luta)..."
+                  className="flex-1 min-w-0 px-2.5 py-1.5 text-xs border vtt-border vtt-surface"
+                />
+                <input
+                  type="number"
+                  value={quickAttrVal}
+                  onChange={(e) => setQuickAttrVal(Number(e.target.value))}
+                  className="w-14 px-2 py-1.5 text-xs text-center tabular-nums border vtt-border vtt-surface"
+                  title="Valor do atributo"
+                />
+                <button
+                  type="submit"
+                  disabled={!quickAttrName.trim()}
+                  className="px-2.5 py-1.5 text-xs font-semibold border vtt-border vtt-surface hover:vtt-subtle disabled:opacity-40 whitespace-nowrap shrink-0"
+                >
+                  + Atributo
+                </button>
+              </form>
+            </div>
+          )}
+        </div>
+
+        {/* Collapsible Grouped Sheet Sections (2-column grid in A4 mode!) */}
+        <div className={isA4View ? 'grid grid-cols-1 md:grid-cols-2 gap-5 items-start' : 'space-y-4'}>
+          {visibleGroups.map((group) => {
+            const isCollapsed = Boolean(collapsedSections[group.section]);
+            return (
+              <section key={group.section} className="border vtt-border vtt-surface/60">
+                <button
+                  type="button"
+                  onClick={() => toggleSectionCollapsed(group.section)}
+                  className="w-full px-3 py-2 flex items-center justify-between gap-2 vtt-subtle hover:opacity-95 transition-opacity text-left"
+                >
+                  <span className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    {isCollapsed ? (
+                      <ChevronRight className="w-3.5 h-3.5 vtt-accent-text" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5 vtt-accent-text" />
+                    )}
+                    {group.section}
+                  </span>
+                  <span className="text-[10px] vtt-muted tabular-nums">
+                    {group.items.length} {group.items.length === 1 ? 'bloco' : 'blocos'}
+                  </span>
+                </button>
+
+                {!isCollapsed && (
+                  <div className="p-2.5 space-y-2.5">
                     {group.items.map(({ block, index }) => {
                       const isItemExpanded = expandedItemConfigId === block.id;
                       const autoItemFormula =
@@ -1429,7 +1286,6 @@ export function CharacterSheetPanel({
                           {/* Universal Custom Item / Weapon / Ability linked to Chosen Attributes */}
                           {block.type === 'item' && (
                             <div className="space-y-2">
-                              {/* Quick Attribute Summary & 1-Click Roll Buttons */}
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <div className="flex items-center gap-1.5 text-[11px] vtt-muted flex-wrap">
                                   <span>
@@ -1497,7 +1353,6 @@ export function CharacterSheetPanel({
                                 </p>
                               )}
 
-                              {/* Inline Visual Attribute & Dice Selector when expanded */}
                               {isItemExpanded && (
                                 <div className="pt-2 border-t vtt-border space-y-2">
                                   <div className="grid grid-cols-2 gap-1.5">
@@ -1687,7 +1542,7 @@ export function CharacterSheetPanel({
                             <textarea
                               value={block.text || ''}
                               onChange={(e) => updateBlock(block.id, { text: e.target.value })}
-                              rows={3}
+                              rows={isA4View ? 4 : 3}
                               placeholder="Escreva habilidades, equipamentos, magias ou anotações..."
                               className="w-full px-2.5 py-2 text-xs border vtt-border vtt-surface resize-y leading-relaxed"
                             />
@@ -1696,52 +1551,496 @@ export function CharacterSheetPanel({
                       );
                     })}
                   </div>
-                </section>
-              ))}
+                )}
+              </section>
+            );
+          })}
+        </div>
 
-              {/* Add Block Bar */}
-              <div className="border-t vtt-border pt-3 space-y-2">
-                <p className="text-[11px] vtt-muted">Adicionar bloco na ficha</p>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => addBlock('item')}
-                    className="py-2 px-2.5 text-xs font-semibold border vtt-border vtt-surface hover:vtt-subtle flex items-center justify-center gap-1.5"
-                  >
-                    <Swords className="w-3.5 h-3.5 vtt-accent-text" /> + Item com Rolagem
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => addBlock('attribute')}
-                    className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> + Atributo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => addBlock('bar')}
-                    className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> + Barra (Vida/Mana)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => addBlock('counter')}
-                    className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> + Contador / Munição
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => addBlock('text')}
-                    className="col-span-2 py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> + Bloco de Texto / Notas
-                  </button>
-                </div>
-              </div>
+        {/* Collapsible Add Block Sub-menu */}
+        <div className="border-t vtt-border pt-3 space-y-2">
+          <button
+            type="button"
+            onClick={() => setShowAddBlockMenu((v) => !v)}
+            className="w-full py-2 px-3 text-xs font-semibold border vtt-border vtt-surface hover:vtt-subtle flex items-center justify-between"
+          >
+            <span className="flex items-center gap-1.5">
+              <Plus className="w-3.5 h-3.5 vtt-accent-text" />
+              Adicionar bloco na ficha
+            </span>
+            {showAddBlockMenu ? (
+              <ChevronDown className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5" />
+            )}
+          </button>
+
+          {showAddBlockMenu && (
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => addBlock('item')}
+                className="py-2 px-2.5 text-xs font-semibold border vtt-border vtt-surface hover:vtt-subtle flex items-center justify-center gap-1.5"
+              >
+                <Swords className="w-3.5 h-3.5 vtt-accent-text" /> + Item com Rolagem
+              </button>
+              <button
+                type="button"
+                onClick={() => addBlock('attribute')}
+                className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" /> + Atributo
+              </button>
+              <button
+                type="button"
+                onClick={() => addBlock('bar')}
+                className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" /> + Barra (Vida/Mana)
+              </button>
+              <button
+                type="button"
+                onClick={() => addBlock('counter')}
+                className="py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" /> + Contador / Munição
+              </button>
+              <button
+                type="button"
+                onClick={() => addBlock('text')}
+                className="col-span-2 py-2 px-2.5 text-xs border vtt-border vtt-surface hover:opacity-80 flex items-center justify-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" /> + Bloco de Texto / Notas
+              </button>
             </div>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Sheet selector + Fullscreen A4 + Create button */}
+      <div className="p-3 border-b vtt-border flex items-center gap-1.5 vtt-subtle">
+        <select
+          value={activeSheet?.id || ''}
+          onChange={(e) => setSelectedId(e.target.value)}
+          className="flex-1 px-2.5 py-2 text-xs border vtt-border vtt-surface min-w-0"
+          aria-label="Selecionar ficha"
+        >
+          {sheets.length === 0 && <option value="">Nenhuma ficha criada</option>}
+          {sheets.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name} {s.templateId ? `· ${s.templateId}` : ''}
+            </option>
+          ))}
+        </select>
+        {activeSheet && (
+          <button
+            type="button"
+            onClick={() => setShowA4Modal(true)}
+            className="px-2.5 py-2 text-xs font-semibold border vtt-border vtt-surface hover:vtt-canvas flex items-center gap-1 whitespace-nowrap shrink-0"
+            title="Abrir ficha completa em tamanho folha A4"
+          >
+            <Maximize2 className="w-3.5 h-3.5 vtt-accent-text" />
+            <span>A4</span>
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setShowNewDrawer((v) => !v)}
+          className="px-2.5 py-2 text-xs font-semibold vtt-accent-btn flex items-center gap-1 whitespace-nowrap shrink-0"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Nova
+        </button>
+      </div>
+
+      {/* Universal Custom RPG Sheet Builder & PDF Importer Drawer */}
+      {showNewDrawer && (
+        <div className="p-4 border-b vtt-border vtt-canvas space-y-4 overflow-y-auto max-h-[80vh]">
+          {/* Option 1: Smart Custom RPG System Sheet Builder */}
+          <form onSubmit={handleCreateBlank} className="space-y-3 border vtt-border vtt-surface p-3.5">
+            <p className="text-xs font-bold font-typewriter">
+              Criar Ficha de Sistema Personalizado
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input
+                type="text"
+                required
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                maxLength={100}
+                placeholder="Nome do personagem"
+                className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
+              />
+              <input
+                type="text"
+                value={newSystem}
+                onChange={(e) => setNewSystem(e.target.value)}
+                maxLength={80}
+                placeholder="Nome do sistema (ex: Meu RPG)"
+                className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-semibold block">
+                Como funcionam os dados do seu sistema?
+              </span>
+              <div className="grid grid-cols-2 gap-1.5">
+                {SYSTEM_DICE_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => {
+                      setNewSystemPreset(preset.id);
+                      if (preset.id === '1d100') {
+                        setNewAttrsCsv('Força, Destreza, Inteligência, Poder, Investigação');
+                      }
+                    }}
+                    className={`p-2 text-left border transition-colors ${
+                      newSystemPreset === preset.id
+                        ? 'vtt-accent-btn border-transparent'
+                        : 'vtt-canvas vtt-border'
+                    }`}
+                  >
+                    <p className="text-[11px] font-semibold">{preset.label}</p>
+                    <p
+                      className={`text-[10px] truncate ${
+                        newSystemPreset === preset.id ? 'opacity-90' : 'vtt-muted'
+                      }`}
+                    >
+                      {preset.shortDesc}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <label className="block space-y-1">
+              <span className="text-[11px] font-semibold">
+                Atributos iniciais (separados por vírgula)
+              </span>
+              <input
+                type="text"
+                value={newAttrsCsv}
+                onChange={(e) => setNewAttrsCsv(e.target.value)}
+                placeholder="Força, Agilidade, Intelecto, Vigor, Presença"
+                className="w-full px-3 py-2 text-xs border vtt-border vtt-canvas"
+              />
+            </label>
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              {activeSheet ? (
+                <button
+                  type="button"
+                  onClick={() => void handleDuplicateCurrent()}
+                  className="px-3 py-1.5 text-xs border vtt-border vtt-canvas flex items-center gap-1.5"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  Duplicar atual
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowNewDrawer(false)}
+                  className="px-3 py-1.5 text-xs border vtt-border"
+                >
+                  Fechar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newName.trim() || importingPdf}
+                  className="px-4 py-1.5 text-xs font-semibold vtt-accent-btn disabled:opacity-50"
+                >
+                  Criar ficha pronta
+                </button>
+              </div>
+            </div>
+          </form>
+
+          {/* Option 2: Smart PDF Import */}
+          <div className="border vtt-border vtt-surface p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 vtt-accent-text shrink-0" />
+                <span className="text-xs font-semibold">Ou importar PDF (auto-montar)</span>
+              </div>
+              <label className="py-1.5 px-3 text-xs font-semibold border vtt-border vtt-canvas hover:vtt-subtle cursor-pointer flex items-center gap-1.5 whitespace-nowrap">
+                {importingPdf ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>{importStatus || 'Lendo...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <FileUp className="w-3.5 h-3.5" />
+                    <span>Escolher PDF</span>
+                  </>
+                )}
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  className="hidden"
+                  disabled={importingPdf}
+                  onChange={(e) => {
+                    void handleSmartPdfImport(e.target.files?.[0]);
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Active Sheet Content */}
+      {!activeSheet ? (
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center space-y-4">
+          <FileText className="w-8 h-8 vtt-muted" />
+          <div className="space-y-1.5 max-w-xs">
+            <p className="text-sm font-bold font-typewriter">Fichas Universais</p>
+            <p className="text-xs vtt-muted leading-relaxed">
+              Crie fichas para qualquer sistema personalizado com itens que rolam automaticamente com base nos seus atributos, ou importe um PDF.
+            </p>
+          </div>
+          <div className="flex flex-col sm:flex-row items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowNewDrawer(true)}
+              className="px-4 py-2.5 text-xs font-semibold vtt-accent-btn"
+            >
+              Criar ficha personalizada
+            </button>
+            <label className="px-4 py-2.5 text-xs font-semibold border vtt-border vtt-surface cursor-pointer flex items-center gap-1.5">
+              {importingPdf ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  {importStatus || 'Lendo PDF...'}
+                </>
+              ) : (
+                <>
+                  <FileUp className="w-3.5 h-3.5" />
+                  Importar PDF
+                </>
+              )}
+              <input
+                type="file"
+                accept="application/pdf"
+                className="hidden"
+                disabled={importingPdf}
+                onChange={(e) => {
+                  void handleSmartPdfImport(e.target.files?.[0]);
+                  e.target.value = '';
+                }}
+              />
+            </label>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Character Header with Local Portrait Photo Upload + Drag to Tabletop */}
+          <div className="space-y-3 border-b vtt-border pb-3.5">
+            <div className="flex items-start gap-3">
+              <div
+                draggable={canDragToCanvas}
+                onDragStart={handleDragPortraitToCanvas}
+                className={`relative shrink-0 ${
+                  canDragToCanvas ? 'cursor-grab active:cursor-grabbing' : ''
+                }`}
+                title={
+                  canDragToCanvas
+                    ? 'Clique para trocar foto · Arraste este retrato direto para o mapa!'
+                    : 'Enviar foto do personagem'
+                }
+              >
+                <label className="relative w-14 h-14 border vtt-border vtt-subtle overflow-hidden cursor-pointer group flex items-center justify-center">
+                  {avatarResolvedUrl ? (
+                    <img
+                      src={avatarResolvedUrl}
+                      alt={activeSheet.name}
+                      draggable={false}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <Camera className="w-5 h-5 vtt-muted group-hover:opacity-100" />
+                  )}
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                    <Upload className="w-4 h-4 text-white" />
+                  </div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    disabled={uploadingAvatar}
+                    onChange={(e) => {
+                      void handleAvatarUpload(e.target.files?.[0]);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+
+              <div className="flex-1 space-y-1 min-w-0">
+                <input
+                  type="text"
+                  value={activeSheet.name}
+                  onChange={(e) => patchSheet({ ...activeSheet, name: e.target.value })}
+                  className="w-full text-base font-bold font-typewriter bg-transparent border-b border-transparent focus:border-current pb-0.5"
+                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={activeSheet.subtitle}
+                    onChange={(e) => patchSheet({ ...activeSheet, subtitle: e.target.value })}
+                    placeholder="Classe, arquétipo ou origem"
+                    className="flex-1 text-xs vtt-muted bg-transparent border-b border-transparent focus:border-current min-w-0"
+                  />
+                  <input
+                    type="text"
+                    value={activeSheet.templateId || ''}
+                    onChange={(e) => patchSheet({ ...activeSheet, templateId: e.target.value })}
+                    placeholder="Sistema"
+                    className="w-24 text-[11px] vtt-muted text-right bg-transparent border-b border-transparent focus:border-current shrink-0"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void onDeleteSheet(activeSheet.id)}
+                className="p-1.5 vtt-muted hover:text-red-700 shrink-0"
+                title="Excluir ficha"
+                aria-label="Excluir ficha"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Draggable Token Strip for GM to drag character straight onto the tabletop */}
+            {canDragToCanvas && (
+              <div
+                draggable
+                onDragStart={handleDragPortraitToCanvas}
+                className="px-2.5 py-1.5 border border-dashed border-amber-500/60 vtt-canvas flex items-center justify-between gap-2 cursor-grab active:cursor-grabbing hover:vtt-subtle transition-colors"
+                title="Arraste e solte direto no mapa para colocar o token deste personagem!"
+              >
+                <span className="text-[11px] font-semibold flex items-center gap-1.5 truncate">
+                  <GripVertical className="w-3.5 h-3.5 vtt-accent-text shrink-0" />
+                  <span className="truncate">Arrastar token de {activeSheet.name} para o mapa</span>
+                </span>
+                <span className="text-[10px] vtt-muted whitespace-nowrap shrink-0">Player</span>
+              </div>
+            )}
+
+            <div className="flex items-center gap-1 p-1 vtt-subtle border vtt-border">
+              <button
+                type="button"
+                onClick={() => patchSheet({ ...activeSheet, mode: 'modular' })}
+                className={`flex-1 py-1.5 text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                  activeSheet.mode === 'modular' ? 'vtt-accent-btn' : 'vtt-muted'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                Ficha Interativa
+              </button>
+              <button
+                type="button"
+                onClick={() => patchSheet({ ...activeSheet, mode: 'pdf' })}
+                className={`flex-1 py-1.5 text-xs font-semibold flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                  activeSheet.mode === 'pdf' ? 'vtt-accent-btn' : 'vtt-muted'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                PDF Original
+              </button>
+            </div>
+          </div>
+
+          {renderActiveSheetBody(false)}
+        </div>
+      )}
+
+      {/* Fullscreen A4 Paper Character Sheet Modal (Available for GM & Players) */}
+      {showA4Modal && activeSheet && (
+        <div
+          className="fixed inset-0 z-[70] bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6"
+          onClick={() => setShowA4Modal(false)}
+        >
+          <div
+            className="w-full max-w-[850px] h-[92vh] vtt-surface border vtt-border shadow-2xl flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* A4 Sheet Paper Header */}
+            <div className="px-6 py-4 border-b vtt-border vtt-subtle flex items-center justify-between gap-4 shrink-0">
+              <div className="flex items-center gap-3.5 min-w-0">
+                <div className="w-12 h-12 border vtt-border vtt-canvas overflow-hidden shrink-0 flex items-center justify-center">
+                  {avatarResolvedUrl ? (
+                    <img
+                      src={avatarResolvedUrl}
+                      alt={activeSheet.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <FileText className="w-5 h-5 vtt-muted" />
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-widest vtt-muted">
+                    Ficha Completa · Modo Folha A4 {activeSheet.templateId ? `· ${activeSheet.templateId}` : ''}
+                  </p>
+                  <h2 className="text-lg font-bold font-typewriter truncate">
+                    {activeSheet.name}
+                  </h2>
+                  {activeSheet.subtitle && (
+                    <p className="text-xs vtt-muted truncate">{activeSheet.subtitle}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center border vtt-border vtt-canvas p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => patchSheet({ ...activeSheet, mode: 'modular' })}
+                    className={`px-2.5 py-1 text-xs font-semibold ${
+                      activeSheet.mode === 'modular' ? 'vtt-accent-btn' : 'vtt-muted'
+                    }`}
+                  >
+                    Interativa
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => patchSheet({ ...activeSheet, mode: 'pdf' })}
+                    className={`px-2.5 py-1 text-xs font-semibold ${
+                      activeSheet.mode === 'pdf' ? 'vtt-accent-btn' : 'vtt-muted'
+                    }`}
+                  >
+                    PDF
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowA4Modal(false)}
+                  className="p-2 border vtt-border vtt-canvas hover:vtt-subtle"
+                  title="Fechar modo A4"
+                  aria-label="Fechar"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* A4 Sheet Body */}
+            <div className="flex-1 overflow-y-auto p-6 sm:p-8 vtt-canvas">
+              {renderActiveSheetBody(true)}
+            </div>
+          </div>
         </div>
       )}
     </div>

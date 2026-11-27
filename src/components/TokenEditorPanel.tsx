@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   BookmarkPlus,
   ChevronDown,
@@ -17,6 +17,7 @@ import {
   Skull,
   Sparkles,
   Square,
+  Swords,
   Trash2,
   Unlock,
   Upload,
@@ -27,13 +28,18 @@ import type {
   ActiveHandoutProjection,
   SceneToken,
   TokenBehavior,
+  TokenCategory,
   TokenOutlineStyle,
   TokenShadow,
   TokenStatusEffect,
   TokenTexture,
   TokenVitalStatus,
 } from '../types/vtt';
-import { uploadMediaFile, type CampaignUploadContext } from '../lib/mediaStore';
+import {
+  resolveMediaUrl,
+  uploadMediaFile,
+  type CampaignUploadContext,
+} from '../lib/mediaStore';
 
 export const TOKEN_SWATCH_COLORS = [
   '#8f2d2d',
@@ -89,7 +95,28 @@ export function TokenEditorPanel({
   const [customStatusLabel, setCustomStatusLabel] = useState('');
   const [customStatusKind, setCustomStatusKind] = useState<'buff' | 'debuff'>('buff');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [uploadingCombatSprite, setUploadingCombatSprite] = useState(false);
+  const [combatSpritePreview, setCombatSpritePreview] = useState('');
+  const [showCombatSpriteUrl, setShowCombatSpriteUrl] = useState(false);
   const [showStatusAccordion, setShowStatusAccordion] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    if (!token.combatSpriteMediaId && !token.combatSpriteUrl) {
+      setCombatSpritePreview('');
+      return;
+    }
+    void resolveMediaUrl(
+      token.combatSpriteMediaId,
+      token.combatSpriteUrl,
+      uploadContext?.campaignId
+    ).then((url) => {
+      if (alive) setCombatSpritePreview(url || token.combatSpriteUrl || '');
+    });
+    return () => {
+      alive = false;
+    };
+  }, [token.combatSpriteMediaId, token.combatSpriteUrl, uploadContext?.campaignId]);
 
   const statuses = token.statuses || [];
   const vitalStatus: TokenVitalStatus = token.vitalStatus || 'alive';
@@ -142,6 +169,28 @@ export function TokenEditorPanel({
       onNotify?.(err instanceof Error ? err.message : 'Erro ao enviar foto.');
     } finally {
       setUploadingPhoto(false);
+    }
+  }
+
+  async function handleCombatSpriteUpload(file: File | undefined) {
+    if (!file || !uploadContext) return;
+    setUploadingCombatSprite(true);
+    try {
+      const res = await uploadMediaFile(file, {
+        ...uploadContext,
+        optimizeFor: 'combat_sprite',
+      });
+      patch({ combatSpriteMediaId: res.mediaId, combatSpriteUrl: res.url });
+      setCombatSpritePreview(res.previewUrl || res.url);
+      onNotify?.(
+        res.compressionSummary
+          ? `PNG de combate auto-recortado (${res.compressionSummary}).`
+          : `PNG de combate atualizado: ${res.fileName}`
+      );
+    } catch (err) {
+      onNotify?.(err instanceof Error ? err.message : 'Erro ao enviar PNG de combate.');
+    } finally {
+      setUploadingCombatSprite(false);
     }
   }
 
@@ -335,6 +384,25 @@ export function TokenEditorPanel({
                     Salvar no Acervo para replicar
                   </button>
                 )}
+
+                {/* Quick Combat Full-Body PNG Shortcut */}
+                <button
+                  type="button"
+                  onClick={() => setTab('visual')}
+                  className="w-full py-1.5 px-2.5 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center justify-between gap-2"
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <Swords className="w-3.5 h-3.5 vtt-accent-text shrink-0" />
+                    <span className="truncate font-semibold">
+                      {token.combatSpriteUrl || token.combatSpriteMediaId
+                        ? 'PNG Corpo Todo (Combate 3D) ativo'
+                        : 'Adicionar PNG Corpo Todo (Duelo 3D)'}
+                    </span>
+                  </span>
+                  <span className="text-[10px] vtt-muted shrink-0">
+                    {token.combatSpriteUrl || token.combatSpriteMediaId ? 'Editar' : 'Abrir'}
+                  </span>
+                </button>
               </>
             )}
 
@@ -480,7 +548,7 @@ export function TokenEditorPanel({
 
         {tab === 'visual' && (
           <>
-            {/* Name & Photo */}
+            {/* Name, Category & Photo */}
             <div className="space-y-1.5">
               <label className="block space-y-1">
                 <span className="text-[11px] vtt-muted">Nome da Camada</span>
@@ -492,6 +560,43 @@ export function TokenEditorPanel({
                   className="w-full px-2.5 py-1.5 text-xs border vtt-border vtt-canvas"
                 />
               </label>
+
+              {!isTextLayer && (
+                <div className="space-y-1 pt-0.5">
+                  <span className="text-[11px] vtt-muted block">Categoria</span>
+                  <div className="grid grid-cols-3 gap-1">
+                    {(
+                      [
+                        ['player', 'Player'],
+                        ['npc', 'NPC'],
+                        ['item', 'Item / Elem.'],
+                      ] as Array<[TokenCategory, string]>
+                    ).map(([cat, label]) => {
+                      const currentCat: TokenCategory =
+                        token.tokenCategory ||
+                        (token.sheetId
+                          ? 'player'
+                          : token.layerKind === 'image' || token.shape === 'rect'
+                            ? 'item'
+                            : 'npc');
+                      return (
+                        <button
+                          key={cat}
+                          type="button"
+                          onClick={() => patch({ tokenCategory: cat })}
+                          className={`py-1.5 px-1.5 text-[10px] border whitespace-nowrap ${
+                            currentCat === cat
+                              ? 'vtt-accent-btn border-transparent font-semibold'
+                              : 'vtt-canvas vtt-border vtt-muted'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {!isTextLayer && (
                 <div className="grid grid-cols-2 gap-1.5 pt-1">
@@ -535,7 +640,7 @@ export function TokenEditorPanel({
               {uploadContext && !isTextLayer && (
                 <label className="w-full py-1.5 px-2.5 border border-dashed vtt-border vtt-canvas hover:vtt-subtle cursor-pointer flex items-center justify-center gap-1.5 text-[11px] font-semibold">
                   <Upload className="w-3.5 h-3.5 vtt-accent-text" />
-                  <span>{uploadingPhoto ? 'Otimizando...' : 'Trocar imagem'}</span>
+                  <span>{uploadingPhoto ? 'Otimizando...' : 'Trocar imagem do token'}</span>
                   <input
                     type="file"
                     accept="image/*"
@@ -547,6 +652,116 @@ export function TokenEditorPanel({
                     }}
                   />
                 </label>
+              )}
+
+              {/* Extra Full-Body Combat PNG Slot (Auto-Cropped Transparent Standee for 3D Duel) */}
+              {!isTextLayer && (
+                <div className="mt-2 p-2.5 border vtt-border vtt-canvas space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold flex items-center gap-1.5">
+                      <Swords className="w-3.5 h-3.5 vtt-accent-text shrink-0" />
+                      Foto de Combate (PNG Corpo Todo)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowCombatSpriteUrl((v) => !v)}
+                      className="text-[10px] vtt-muted hover:underline shrink-0"
+                    >
+                      {showCombatSpriteUrl ? 'Ocultar link' : 'Link PNG'}
+                    </button>
+                  </div>
+                  <p className="text-[10px] vtt-muted leading-snug">
+                    Opcional. Recorta automaticamente as bordas transparentes e substitui o token por um personagem de corpo inteiro no Duelo 3D.
+                  </p>
+
+                  {combatSpritePreview ? (
+                    <div className="flex items-center gap-2.5 p-2 border vtt-border vtt-surface">
+                      <div
+                        className="w-12 h-16 shrink-0 flex items-end justify-center overflow-hidden border vtt-border"
+                        style={{
+                          backgroundImage:
+                            'repeating-conic-gradient(rgba(128,128,128,0.18) 0% 25%, transparent 0% 50%)',
+                          backgroundSize: '10px 10px',
+                        }}
+                      >
+                        <img
+                          src={combatSpritePreview}
+                          alt={`Sprite de combate ${token.name}`}
+                          referrerPolicy="no-referrer"
+                          className="max-w-full max-h-full object-contain object-bottom"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <p className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                          PNG de combate pronto
+                        </p>
+                        <div className="flex items-center gap-1.5">
+                          {uploadContext && (
+                            <label className="px-2 py-1 text-[10px] font-semibold border vtt-border vtt-canvas hover:vtt-subtle cursor-pointer">
+                              {uploadingCombatSprite ? 'Recortando...' : 'Trocar'}
+                              <input
+                                type="file"
+                                accept="image/png,image/webp,image/*"
+                                className="hidden"
+                                disabled={uploadingCombatSprite}
+                                onChange={(e) => {
+                                  void handleCombatSpriteUpload(e.target.files?.[0]);
+                                  e.target.value = '';
+                                }}
+                              />
+                            </label>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              patch({ combatSpriteUrl: '', combatSpriteMediaId: '' });
+                              setCombatSpritePreview('');
+                            }}
+                            className="px-2 py-1 text-[10px] border vtt-border text-red-600 dark:text-red-400 hover:vtt-subtle"
+                          >
+                            Remover
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    uploadContext && (
+                      <label className="w-full py-2 px-2.5 border border-dashed vtt-border vtt-surface hover:vtt-subtle cursor-pointer flex items-center justify-center gap-1.5 text-[11px] font-semibold">
+                        <Upload className="w-3.5 h-3.5 vtt-accent-text" />
+                        <span>
+                          {uploadingCombatSprite
+                            ? 'Recortando transparência...'
+                            : 'Enviar PNG corpo todo'}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/png,image/webp,image/*"
+                          className="hidden"
+                          disabled={uploadingCombatSprite}
+                          onChange={(e) => {
+                            void handleCombatSpriteUpload(e.target.files?.[0]);
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    )
+                  )}
+
+                  {showCombatSpriteUrl && (
+                    <input
+                      type="text"
+                      value={token.combatSpriteUrl || ''}
+                      onChange={(e) =>
+                        patch({
+                          combatSpriteUrl: e.target.value.trim(),
+                          combatSpriteMediaId: '',
+                        })
+                      }
+                      placeholder="https://.../personagem_corpo_todo.png"
+                      className="w-full px-2 py-1.5 text-[11px] border vtt-border vtt-surface"
+                    />
+                  )}
+                </div>
               )}
             </div>
 

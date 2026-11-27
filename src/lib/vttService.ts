@@ -27,11 +27,18 @@ import {
   type CampaignNote,
   type CampaignTheme,
   type CharacterSheet,
+  type ChatAttachment,
+  type ChatMessage,
+  type ChatReplyRef,
+  type ChatRosterEntry,
   type DiceRoll,
   type FogStroke,
   type GridConfig,
   type Handout,
   type HandoutKind,
+  type InterludeConfig,
+  type LiveAudioState,
+  type LiveCampaignChat,
   type LivePublicWiki,
   type LiveSceneSnapshot,
   type LiveTableState,
@@ -147,6 +154,8 @@ export function toLiveSceneSnapshot(
   duelConfig?: SceneDuelConfig,
   playerViewMode?: 'scene' | 'clues' | 'dice' | 'standby'
 ): LiveSceneSnapshot {
+  const scopedDuel =
+    activeDuel && activeDuel.sceneId === scene.id ? activeDuel : null;
   return stripUndefinedDeep({
     id: scene.id,
     name: scene.name,
@@ -160,7 +169,7 @@ export function toLiveSceneSnapshot(
     walls: scene.walls || [],
     dynamicVision: Boolean(scene.dynamicVision),
     tokens: (scene.tokens || []).filter((t) => !t.hiddenFromPlayers),
-    activeDuel: sanitizePublicDuelState(activeDuel),
+    activeDuel: sanitizePublicDuelState(scopedDuel),
     duelConfig,
     playerViewMode: playerViewMode || 'scene',
   });
@@ -188,6 +197,28 @@ export async function syncLiveDuelState(
   try {
     await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
       activeScene: snapshot,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
+  }
+}
+
+export async function syncLiveAudioState(
+  campaignId: string,
+  liveAudio: LiveAudioState | null,
+  currentLiveState: LiveTableState | null
+) {
+  const cleanAudio = liveAudio ? stripUndefinedDeep(liveAudio) : null;
+  if (currentLiveState) {
+    broadcastLiveState(campaignId, {
+      ...currentLiveState,
+      liveAudio: cleanAudio,
+    });
+  }
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      liveAudio: cleanAudio,
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
@@ -835,6 +866,50 @@ export async function updateCampaignFolders(campaignId: string, folders: string[
   }
 }
 
+export async function updateCampaignSceneFolders(campaignId: string, sceneFolders: string[]) {
+  const uniqueClean = Array.from(
+    new Set(
+      sceneFolders
+        .map((f) => clampStr(f, FIELD_LIMITS.NOTE_FOLDER))
+        .filter((f) => f.length > 0)
+    )
+  ).slice(0, 40);
+
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId), {
+      sceneFolders: uniqueClean,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}`);
+  }
+}
+
+export async function syncInterludeConfig(
+  campaignId: string,
+  interludeConfig: InterludeConfig,
+  currentLiveState: LiveTableState | null
+) {
+  const clean: InterludeConfig = {
+    title: clampStr(interludeConfig.title, 120),
+    subtitle: clampStr(interludeConfig.subtitle, 300),
+    icon: interludeConfig.icon || 'sparkles',
+    imageUrl: clampStr(interludeConfig.imageUrl, FIELD_LIMITS.URL_MAX),
+    mediaId: clampStr(interludeConfig.mediaId, FIELD_LIMITS.MEDIA_ID),
+  };
+  if (currentLiveState) {
+    broadcastLiveState(campaignId, { ...currentLiveState, interludeConfig: clean });
+  }
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      interludeConfig: clean,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
+  }
+}
+
 export async function triggerShakePulse(
   campaignId: string,
   currentLiveState: LiveTableState | null
@@ -865,12 +940,15 @@ export async function deleteCampaign(campaignId: string, roomCode: string) {
 export async function activateScene(
   campaignId: string,
   scene: Scene,
-  currentLiveState: LiveTableState | null
+  currentLiveState: LiveTableState | null,
+  activeDuel?: ActiveDuelState | null,
+  duelConfig?: SceneDuelConfig
 ) {
+  const scopedDuel = activeDuel && activeDuel.sceneId === scene.id ? activeDuel : null;
   const snapshot = toLiveSceneSnapshot(
     scene,
-    undefined,
-    undefined,
+    scopedDuel,
+    duelConfig,
     currentLiveState?.activeScene?.playerViewMode || 'scene'
   );
   if (currentLiveState) {
@@ -896,6 +974,7 @@ export async function createScene(params: {
   campaignId: string;
   gmUid: string;
   name: string;
+  folder?: string;
   category: SceneCategory;
   imageUrl: string;
   mediaId?: string;
@@ -919,6 +998,7 @@ export async function createScene(params: {
       campaignId: params.campaignId,
       gmUid: params.gmUid,
       name: clampStr(params.name, FIELD_LIMITS.SCENE_NAME) || 'Nova Cena',
+      folder: clampStr(params.folder, FIELD_LIMITS.NOTE_FOLDER),
       category: params.category,
       imageUrl: clampStr(params.imageUrl, FIELD_LIMITS.URL_MAX),
       mediaId: clampStr(params.mediaId, FIELD_LIMITS.MEDIA_ID),
@@ -950,10 +1030,11 @@ export async function updateSceneGrid(
 ) {
   const cleanGrid = sanitizeGridConfig(grid);
   const updatedScene: Scene = { ...scene, grid: cleanGrid };
+  const sameLiveScene = liveState?.activeScene?.id === scene.id;
   const snapshot = toLiveSceneSnapshot(
     updatedScene,
-    liveState?.activeScene?.activeDuel,
-    liveState?.activeScene?.duelConfig,
+    sameLiveScene ? liveState?.activeScene?.activeDuel : null,
+    sameLiveScene ? liveState?.activeScene?.duelConfig : undefined,
     liveState?.activeScene?.playerViewMode || 'scene'
   );
   if (isActive && liveState) {
@@ -990,10 +1071,11 @@ export async function updateSceneFog(
 ) {
   const bounded = stripUndefinedDeep(fogStrokes.slice(-FIELD_LIMITS.MAX_FOG_STROKES));
   const updatedScene: Scene = { ...scene, fogEnabled, fogStrokes: bounded };
+  const sameLiveScene = liveState?.activeScene?.id === scene.id;
   const snapshot = toLiveSceneSnapshot(
     updatedScene,
-    liveState?.activeScene?.activeDuel,
-    liveState?.activeScene?.duelConfig,
+    sameLiveScene ? liveState?.activeScene?.activeDuel : null,
+    sameLiveScene ? liveState?.activeScene?.duelConfig : undefined,
     liveState?.activeScene?.playerViewMode || 'scene'
   );
   if (isActive && liveState) {
@@ -1031,10 +1113,11 @@ export async function updateSceneWalls(
 ) {
   const bounded = stripUndefinedDeep(walls.slice(0, FIELD_LIMITS.MAX_WALLS));
   const updatedScene: Scene = { ...scene, walls: bounded, dynamicVision };
+  const sameLiveScene = liveState?.activeScene?.id === scene.id;
   const snapshot = toLiveSceneSnapshot(
     updatedScene,
-    liveState?.activeScene?.activeDuel,
-    liveState?.activeScene?.duelConfig,
+    sameLiveScene ? liveState?.activeScene?.activeDuel : null,
+    sameLiveScene ? liveState?.activeScene?.duelConfig : undefined,
     liveState?.activeScene?.playerViewMode || 'scene'
   );
   if (isActive && liveState) {
@@ -1071,10 +1154,11 @@ export async function updateSceneTokens(
 ) {
   const bounded = stripUndefinedDeep(tokens.slice(0, FIELD_LIMITS.MAX_TOKENS));
   const updatedScene: Scene = { ...scene, tokens: bounded };
+  const sameLiveScene = liveState?.activeScene?.id === scene.id;
   const snapshot = toLiveSceneSnapshot(
     updatedScene,
-    liveState?.activeScene?.activeDuel,
-    liveState?.activeScene?.duelConfig,
+    sameLiveScene ? liveState?.activeScene?.activeDuel : null,
+    sameLiveScene ? liveState?.activeScene?.duelConfig : undefined,
     liveState?.activeScene?.playerViewMode || 'scene'
   );
   if (isActive && liveState) {
@@ -1106,9 +1190,11 @@ export async function updateSceneMeta(
   sceneId: string,
   updates: {
     name: string;
+    folder?: string;
     category: SceneCategory;
     imageUrl: string;
     mediaId: string;
+    mediaKind?: SceneMediaKind;
     order: number;
     linkedMusicId: string;
     linkedAmbienceId: string;
@@ -1117,9 +1203,11 @@ export async function updateSceneMeta(
   try {
     await updateDoc(doc(db, 'campaigns', campaignId, 'scenes', sceneId), {
       name: clampStr(updates.name, FIELD_LIMITS.SCENE_NAME) || 'Cena',
+      folder: clampStr(updates.folder, FIELD_LIMITS.NOTE_FOLDER),
       category: updates.category,
       imageUrl: clampStr(updates.imageUrl, FIELD_LIMITS.URL_MAX),
       mediaId: clampStr(updates.mediaId, FIELD_LIMITS.MEDIA_ID),
+      mediaKind: updates.mediaKind || 'image',
       order: updates.order,
       linkedMusicId: clampStr(updates.linkedMusicId, FIELD_LIMITS.MEDIA_ID),
       linkedAmbienceId: clampStr(updates.linkedAmbienceId, FIELD_LIMITS.MEDIA_ID),
@@ -1543,5 +1631,234 @@ export async function deleteAudioTrack(campaignId: string, trackId: string) {
     await deleteDoc(doc(db, 'campaigns', campaignId, 'audioTracks', trackId));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `campaigns/${campaignId}/audioTracks/${trackId}`);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Campaign General & Private Chat (with Replies & Rich Entity Attachments)
+// -----------------------------------------------------------------------------
+export function buildDmChannelId(uidA: string, uidB: string): string {
+  const sorted = [uidA, uidB].sort();
+  return `dm_${sorted[0]}_${sorted[1]}`;
+}
+
+export function subscribeLiveGeneralChat(
+  campaignId: string,
+  onData: (chat: LiveCampaignChat | null) => void
+): Unsubscribe {
+  const path = `campaigns/${campaignId}/live/chat`;
+  return onSnapshot(
+    doc(db, 'campaigns', campaignId, 'live', 'chat'),
+    (snap) => {
+      onData(snap.exists() ? (snap.data() as LiveCampaignChat) : null);
+    },
+    (err) => {
+      // Gracefully ignore missing permission or non-existent doc on brand-new legacy campaigns
+      console.warn('live/chat subscription notice:', path, err?.message);
+      onData(null);
+    }
+  );
+}
+
+export async function syncChatRoster(
+  campaignId: string,
+  gmUid: string,
+  roster: ChatRosterEntry[],
+  currentChat: LiveCampaignChat | null
+) {
+  const cleanRoster = roster
+    .filter((r) => r.uid && r.displayName)
+    .slice(0, 30)
+    .map((r) => ({
+      uid: clampStr(r.uid, FIELD_LIMITS.MEDIA_ID),
+      displayName: clampStr(r.displayName, FIELD_LIMITS.DISPLAY_NAME) || 'Participante',
+      role: r.role,
+    }));
+
+  const ref = doc(db, 'campaigns', campaignId, 'live', 'chat');
+  try {
+    if (!currentChat) {
+      const existing = await getDoc(ref);
+      if (!existing.exists()) {
+        await setDoc(ref, {
+          campaignId,
+          gmUid,
+          messages: [],
+          roster: cleanRoster,
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
+    }
+    await updateDoc(ref, {
+      roster: cleanRoster,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `campaigns/${campaignId}/live/chat`);
+  }
+}
+
+export async function sendGeneralChatMessage(params: {
+  campaignId: string;
+  gmUid: string;
+  senderUid: string;
+  senderName: string;
+  senderRole: 'gm' | 'player';
+  text: string;
+  replyTo?: ChatReplyRef | null;
+  attachment?: ChatAttachment | null;
+  currentMessages: ChatMessage[];
+  currentRoster: ChatRosterEntry[];
+}) {
+  const msg: ChatMessage = stripUndefinedDeep({
+    id: makeId('cmsg'),
+    campaignId: params.campaignId,
+    gmUid: params.gmUid,
+    channelId: 'general',
+    senderUid: params.senderUid,
+    senderName: clampStr(params.senderName, FIELD_LIMITS.DISPLAY_NAME) || 'Participante',
+    senderRole: params.senderRole,
+    text: clampStr(params.text, 4000),
+    replyTo: params.replyTo || null,
+    attachment: params.attachment || null,
+    timestampMs: Date.now(),
+  });
+
+  const nextMessages = [...params.currentMessages, msg].slice(-80);
+  const hasSenderInRoster = params.currentRoster.some((r) => r.uid === params.senderUid);
+  const nextRoster = hasSenderInRoster
+    ? params.currentRoster
+    : [
+        ...params.currentRoster,
+        { uid: params.senderUid, displayName: msg.senderName, role: params.senderRole },
+      ].slice(0, 30);
+
+  const ref = doc(db, 'campaigns', params.campaignId, 'live', 'chat');
+  try {
+    const existing = await getDoc(ref);
+    if (!existing.exists()) {
+      await setDoc(ref, {
+        campaignId: params.campaignId,
+        gmUid: params.gmUid,
+        messages: nextMessages,
+        roster: nextRoster,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(ref, {
+        messages: nextMessages,
+        roster: nextRoster,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `campaigns/${params.campaignId}/live/chat`);
+  }
+}
+
+export function subscribePrivateChatMessages(
+  campaignId: string,
+  currentUid: string,
+  isGM: boolean,
+  onData: (messages: ChatMessage[]) => void
+): Unsubscribe {
+  const colRef = collection(db, 'campaigns', campaignId, 'chatMessages');
+
+  if (isGM) {
+    const q = query(colRef, where('gmUid', '==', currentUid));
+    return onSnapshot(
+      q,
+      (snap) => {
+        const list = snap.docs
+          .map((d) => ({ id: d.id, ...(d.data() as Omit<ChatMessage, 'id'>) }))
+          .sort((a, b) => (a.timestampMs || 0) - (b.timestampMs || 0));
+        onData(list);
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, `campaigns/${campaignId}/chatMessages`)
+    );
+  }
+
+  let sentList: ChatMessage[] = [];
+  let recvList: ChatMessage[] = [];
+
+  const emitMerged = () => {
+    const map = new Map<string, ChatMessage>();
+    for (const m of sentList) map.set(m.id, m);
+    for (const m of recvList) map.set(m.id, m);
+    const merged = Array.from(map.values()).sort(
+      (a, b) => (a.timestampMs || 0) - (b.timestampMs || 0)
+    );
+    onData(merged);
+  };
+
+  const unsubSent = onSnapshot(
+    query(colRef, where('senderUid', '==', currentUid)),
+    (snap) => {
+      sentList = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ChatMessage, 'id'>) }));
+      emitMerged();
+    },
+    (err) => handleFirestoreError(err, OperationType.LIST, `campaigns/${campaignId}/chatMessages`)
+  );
+
+  const unsubRecv = onSnapshot(
+    query(colRef, where('recipientUid', '==', currentUid)),
+    (snap) => {
+      recvList = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<ChatMessage, 'id'>) }));
+      emitMerged();
+    },
+    (err) => handleFirestoreError(err, OperationType.LIST, `campaigns/${campaignId}/chatMessages`)
+  );
+
+  return () => {
+    unsubSent();
+    unsubRecv();
+  };
+}
+
+export async function sendPrivateChatMessage(params: {
+  campaignId: string;
+  gmUid: string;
+  senderUid: string;
+  senderName: string;
+  senderRole: 'gm' | 'player';
+  recipientUid: string;
+  recipientName: string;
+  text: string;
+  replyTo?: ChatReplyRef | null;
+  attachment?: ChatAttachment | null;
+}): Promise<string> {
+  const id = makeId('pmsg');
+  const channelId = buildDmChannelId(params.senderUid, params.recipientUid);
+  const payload = stripUndefinedDeep({
+    campaignId: params.campaignId,
+    gmUid: params.gmUid,
+    channelId,
+    senderUid: params.senderUid,
+    senderName: clampStr(params.senderName, FIELD_LIMITS.DISPLAY_NAME) || 'Participante',
+    senderRole: params.senderRole,
+    recipientUid: params.recipientUid,
+    recipientName: clampStr(params.recipientName, FIELD_LIMITS.DISPLAY_NAME) || 'Participante',
+    text: clampStr(params.text, 4000),
+    replyTo: params.replyTo || null,
+    attachment: params.attachment || null,
+    timestampMs: Date.now(),
+  });
+  try {
+    await setDoc(doc(db, 'campaigns', params.campaignId, 'chatMessages', id), {
+      ...payload,
+      createdAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, `campaigns/${params.campaignId}/chatMessages/${id}`);
+  }
+  return id;
+}
+
+export async function deletePrivateChatMessage(campaignId: string, messageId: string) {
+  try {
+    await deleteDoc(doc(db, 'campaigns', campaignId, 'chatMessages', messageId));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `campaigns/${campaignId}/chatMessages/${messageId}`);
   }
 }

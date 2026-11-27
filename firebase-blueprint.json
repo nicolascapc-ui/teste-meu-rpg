@@ -14,6 +14,7 @@
         "activeSceneId": { "type": "string", "maxLength": 128 },
         "theme": { "type": "object", "description": "Visual theme tokens including colors, preset, dark mode, fontFamily, and sceneEffects." },
         "folders": { "type": "array", "description": "Custom wiki note folders (max 40)." },
+        "sceneFolders": { "type": "array", "description": "Custom scene organization folders (max 40)." },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
@@ -70,6 +71,8 @@
         "theme": { "type": "object" },
         "activeScene": { "type": "object" },
         "activeHandout": { "type": "object" },
+        "interludeConfig": { "type": "object", "description": "Custom standby/interlude screen title, subtitle, icon, and background image." },
+        "liveAudio": { "type": "object", "description": "Real-time synced music, ambience, SFX pulse, volumes, and DSP state controlled by the GM." },
         "recentPublicRolls": { "type": "array" },
         "shakePulseMs": { "type": "number" },
         "updatedAt": { "type": "string", "format": "date-time" }
@@ -122,6 +125,7 @@
         "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
         "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
         "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "folder": { "type": "string", "maxLength": 60 },
         "category": { "type": "string", "enum": ["tactical", "landscape", "location"] },
         "imageUrl": { "type": "string", "maxLength": 1024 },
         "mediaId": { "type": "string", "maxLength": 128 },
@@ -236,6 +240,40 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["campaignId", "gmUid", "name", "layer", "sourceType", "createdAt"]
+    },
+    "LiveCampaignChat": {
+      "title": "LiveCampaignChat",
+      "description": "General campaign chat log and participant roster synced in real-time to all campaign members.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "messages": { "type": "array", "description": "Bounded recent general chat messages (max 80)." },
+        "roster": { "type": "array", "description": "Bounded campaign member roster for DM targeting (max 30)." },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "messages", "roster", "updatedAt"]
+    },
+    "PrivateChatMessage": {
+      "title": "PrivateChatMessage",
+      "description": "Direct private message between two campaign members (or GM and player) with optional replies and rich attachments.",
+      "type": "object",
+      "properties": {
+        "campaignId": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "gmUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "channelId": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "senderUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "senderName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "senderRole": { "type": "string", "enum": ["gm", "player"] },
+        "recipientUid": { "type": "string", "pattern": "^[a-zA-Z0-9_\\-]+$", "maxLength": 128 },
+        "recipientName": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "text": { "type": "string", "maxLength": 4000 },
+        "replyTo": { "type": "object" },
+        "attachment": { "type": "object" },
+        "timestampMs": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["campaignId", "gmUid", "channelId", "senderUid", "senderName", "senderRole", "recipientUid", "recipientName", "text", "timestampMs", "createdAt"]
     }
   },
   "firestore": {
@@ -290,6 +328,14 @@
     "/campaigns/{campaignId}/rolls/{rollId}": {
       "schema": { "$ref": "#/entities/DiceRoll" },
       "description": "Dice roll and chat history with public and GM-only visibility."
+    },
+    "/campaigns/{campaignId}/live/chat": {
+      "schema": { "$ref": "#/entities/LiveCampaignChat" },
+      "description": "Real-time general campaign chat and member roster."
+    },
+    "/campaigns/{campaignId}/chatMessages/{messageId}": {
+      "schema": { "$ref": "#/entities/PrivateChatMessage" },
+      "description": "Private direct messages between campaign participants with rich attachments."
     },
     "/campaigns/{campaignId}/audioTracks/{trackId}": {
       "schema": { "$ref": "#/entities/AudioTrack" },

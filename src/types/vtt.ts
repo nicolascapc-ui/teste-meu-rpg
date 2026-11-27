@@ -80,6 +80,7 @@ export type TokenTexture = 'none' | 'grain' | 'holo' | 'metallic' | 'aged';
 export type TokenShadow = 'none' | 'soft' | 'dramatic' | 'colored';
 export type TokenBehavior = 'none' | 'float' | 'pulse' | 'spin_ring' | 'tremble';
 export type TokenVitalStatus = 'alive' | 'unconscious' | 'dying' | 'dead';
+export type TokenCategory = 'player' | 'npc' | 'item';
 
 export type CanvasLayerKind = 'token' | 'image' | 'text' | 'brush';
 export type BrushStyleId = 'pen' | 'marker' | 'chalk' | 'glow' | 'spray' | 'arrow';
@@ -105,12 +106,15 @@ export interface SceneToken {
   widthPx?: number; // freeform width in 1200px reference canvas units
   heightPx?: number; // freeform height in 1200px reference canvas units
   layerKind?: CanvasLayerKind; // 'token' (default) | 'image' | 'text' | 'brush'
+  tokenCategory?: TokenCategory; // 'player' | 'npc' | 'item'
   shape?: 'circle' | 'rect';
   locked?: boolean;
   opacity?: number; // 0.1 .. 1
   color: string;
   imageUrl?: string;
   mediaId?: string;
+  combatSpriteUrl?: string;
+  combatSpriteMediaId?: string;
   notes?: string;
   hiddenFromPlayers?: boolean;
   sheetId?: string;
@@ -141,6 +145,7 @@ export interface Scene {
   campaignId: string;
   gmUid: string;
   name: string;
+  folder?: string;
   category: SceneCategory;
   imageUrl: string;
   mediaId: string;
@@ -338,6 +343,7 @@ export interface Campaign {
   activeSceneId: string;
   theme: CampaignTheme;
   folders?: string[];
+  sceneFolders?: string[];
   createdAt?: Timestamp | number;
   updatedAt?: Timestamp | number;
 }
@@ -371,6 +377,26 @@ export type DuelCameraAngle =
 
 export type DuelCursorAttackMode = 'none' | 'blade' | 'blunt' | 'shot' | 'arcane';
 
+export type DuelLayoutStyle = 'minimal' | 'medieval' | 'stylized';
+
+export type DuelStatusTagTone = 'danger' | 'warning' | 'info' | 'buff';
+
+export interface DuelStatusTag {
+  id: string;
+  label: string;
+  tone: DuelStatusTagTone;
+}
+
+export interface DuelExtraSettings {
+  layoutStyle: DuelLayoutStyle;
+  comboEnabled: boolean;
+  mouseAttackDamageEnabled: boolean;
+  mouseAttackDamage: number;
+  showSecondaryResource: boolean;
+  secondaryResourceLabel: string;
+  showStatusTags: boolean;
+}
+
 export interface DuelCustomSfxEntry {
   url: string;
   mediaId?: string;
@@ -403,12 +429,15 @@ export interface DuelCombatantState {
   role: 'player' | 'npc';
   imageUrl: string;
   mediaId?: string;
+  combatSpriteUrl?: string;
+  combatSpriteMediaId?: string;
   color: string;
   hpCurrent: number;
   hpMax: number;
   mpCurrent?: number;
   mpMax?: number;
   mpLabel?: string;
+  statusTags?: DuelStatusTag[];
   actions: DuelActionItem[];
   lastHitAtMs?: number;
   lastLungeAtMs?: number;
@@ -421,6 +450,9 @@ export interface DuelLiveEffect {
   targetSide: 'player' | 'npc';
   kind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield';
   damageAmount?: number;
+  damageApplied?: number;
+  comboCount?: number;
+  comboTargetSide?: 'player' | 'npc';
   label?: string;
   isCrit?: boolean;
   slashPoints?: Array<{ x: number; y: number }>;
@@ -444,6 +476,7 @@ export interface ActiveDuelState {
   showCombatantNamesOnScreen?: boolean;
   showCombatInfoOnScreen?: boolean;
   attackSfxMap?: DuelAttackSfxMap;
+  extraSettings?: DuelExtraSettings;
   player: DuelCombatantState;
   npc: DuelCombatantState;
   lastActionSummary?: string;
@@ -463,6 +496,23 @@ export interface SceneDuelConfig {
 
 export type PlayerViewSectionMode = 'scene' | 'clues' | 'dice' | 'standby';
 
+export type InterludeIconId =
+  | 'sparkles'
+  | 'hourglass'
+  | 'compass'
+  | 'book'
+  | 'moon'
+  | 'swords'
+  | 'none';
+
+export interface InterludeConfig {
+  title: string;
+  subtitle: string;
+  icon: InterludeIconId;
+  imageUrl: string;
+  mediaId: string;
+}
+
 export interface LiveSceneSnapshot {
   id: string;
   name: string;
@@ -481,6 +531,42 @@ export interface LiveSceneSnapshot {
   playerViewMode?: PlayerViewSectionMode;
 }
 
+export interface LiveAudioLayerSnapshot {
+  trackId: string;
+  name: string;
+  sourceType: 'url' | 'media' | 'youtube';
+  url: string;
+  mediaId: string;
+  paused: boolean;
+  dsp: AudioDspSettings;
+  startedAtMs: number;
+}
+
+export interface LiveAudioSfxPulse {
+  id: string;
+  trackId: string;
+  name: string;
+  sourceType: 'url' | 'media' | 'youtube';
+  url: string;
+  mediaId: string;
+  dsp: AudioDspSettings;
+  triggeredAtMs: number;
+}
+
+export interface LiveAudioState {
+  music: LiveAudioLayerSnapshot | null;
+  ambience: LiveAudioLayerSnapshot | null;
+  sfxPulse?: LiveAudioSfxPulse | null;
+  volumes: {
+    master: number;
+    music: number;
+    ambience: number;
+    sfx: number;
+    muted: boolean;
+  };
+  updatedAtMs: number;
+}
+
 export interface LiveTableState {
   campaignId: string;
   gmUid: string;
@@ -488,6 +574,8 @@ export interface LiveTableState {
   theme: CampaignTheme;
   activeScene: LiveSceneSnapshot | null;
   activeHandout: ActiveHandoutProjection | null;
+  interludeConfig?: InterludeConfig | null;
+  liveAudio?: LiveAudioState | null;
   recentPublicRolls: PublicRollSummary[];
   shakePulseMs?: number;
   updatedAt?: Timestamp | number;
@@ -497,6 +585,58 @@ export interface LivePublicWiki {
   campaignId: string;
   gmUid: string;
   notes: PublicNoteSummary[];
+  updatedAt?: Timestamp | number;
+}
+
+export type ChatAttachmentKind = 'image' | 'file' | 'item' | 'npc' | 'character' | 'scene';
+
+export interface ChatAttachment {
+  kind: ChatAttachmentKind;
+  title: string;
+  subtitle?: string;
+  url?: string;
+  mediaId?: string;
+  fileName?: string;
+  mimeType?: string;
+  entityId?: string;
+  itemBlock?: SheetBlock;
+  statsSummary?: string;
+}
+
+export interface ChatReplyRef {
+  id: string;
+  senderName: string;
+  textPreview: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  campaignId: string;
+  gmUid: string;
+  channelId: string; // 'general' or 'dm_<uidA>_<uidB>'
+  senderUid: string;
+  senderName: string;
+  senderRole: 'gm' | 'player';
+  recipientUid?: string;
+  recipientName?: string;
+  text: string;
+  replyTo?: ChatReplyRef | null;
+  attachment?: ChatAttachment | null;
+  timestampMs: number;
+  createdAt?: Timestamp | number;
+}
+
+export interface ChatRosterEntry {
+  uid: string;
+  displayName: string;
+  role: 'gm' | 'player';
+}
+
+export interface LiveCampaignChat {
+  campaignId: string;
+  gmUid: string;
+  messages: ChatMessage[];
+  roster: ChatRosterEntry[];
   updatedAt?: Timestamp | number;
 }
 

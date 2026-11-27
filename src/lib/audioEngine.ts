@@ -4,13 +4,63 @@ import {
   type AudioDspSettings,
   type AudioLayer,
   type AudioTrack,
+  type LiveAudioLayerSnapshot,
+  type LiveAudioSfxPulse,
+  type LiveAudioState,
 } from '../types/vtt';
 
 export interface MixerVolumes {
+  master: number;
   music: number;
   ambience: number;
   sfx: number;
   muted: boolean;
+}
+
+export interface AudioMasterDefaults {
+  master: number;
+  music: number;
+  ambience: number;
+  sfx: number;
+}
+
+const STORAGE_MASTER_KEY = 'folio_audio_master_defaults_v1';
+const STORAGE_AUTOPLAY_KEY = 'folio_audio_autoplay_v1';
+
+const FALLBACK_MASTER_DEFAULTS: AudioMasterDefaults = {
+  master: 1,
+  music: 0.55,
+  ambience: 0.45,
+  sfx: 0.85,
+};
+
+function readStoredMasterDefaults(): AudioMasterDefaults {
+  if (typeof window === 'undefined') return { ...FALLBACK_MASTER_DEFAULTS };
+  try {
+    const raw = window.localStorage.getItem(STORAGE_MASTER_KEY);
+    if (!raw) return { ...FALLBACK_MASTER_DEFAULTS };
+    const parsed = JSON.parse(raw) as Partial<AudioMasterDefaults>;
+    return {
+      master: typeof parsed.master === 'number' ? Math.max(0, Math.min(1, parsed.master)) : 1,
+      music: typeof parsed.music === 'number' ? Math.max(0, Math.min(1, parsed.music)) : 0.55,
+      ambience:
+        typeof parsed.ambience === 'number' ? Math.max(0, Math.min(1, parsed.ambience)) : 0.45,
+      sfx: typeof parsed.sfx === 'number' ? Math.max(0, Math.min(1, parsed.sfx)) : 0.85,
+    };
+  } catch {
+    return { ...FALLBACK_MASTER_DEFAULTS };
+  }
+}
+
+function readStoredAutoPlay(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_AUTOPLAY_KEY);
+    if (raw === null) return true;
+    return raw !== 'false';
+  } catch {
+    return true;
+  }
 }
 
 export interface LayerTimingInfo {
@@ -170,12 +220,20 @@ interface ActiveYouTubeNode {
 type LayerNode = ActiveMediaNode | ActiveYouTubeNode;
 
 class VttAudioEngine {
-  private volumes: MixerVolumes = {
-    music: 0.55,
-    ambience: 0.45,
-    sfx: 0.85,
-    muted: false,
-  };
+  private volumes: MixerVolumes = (() => {
+    const d = readStoredMasterDefaults();
+    return {
+      master: d.master,
+      music: d.music,
+      ambience: d.ambience,
+      sfx: d.sfx,
+      muted: false,
+    };
+  })();
+
+  private masterDefaults: AudioMasterDefaults = readStoredMasterDefaults();
+  private autoPlayEnabled: boolean = readStoredAutoPlay();
+  private listeners = new Set<() => void>();
 
   private audioCtx: AudioContext | null = null;
   private layers: Record<'music' | 'ambience', LayerNode | null> = {
@@ -190,6 +248,36 @@ class VttAudioEngine {
 
   private activeMusicTrackId: string | null = null;
   private activeAmbienceTrackId: string | null = null;
+  private activeMusicTrack: AudioTrack | null = null;
+  private activeAmbienceTrack: AudioTrack | null = null;
+  private musicStartedAtMs = 0;
+  private ambienceStartedAtMs = 0;
+  private lastSfxPulse: LiveAudioSfxPulse | null = null;
+
+  // Remote sync tracking (for Second Screen TV & Player devices)
+  private appliedRemoteMusicKey = '';
+  private appliedRemoteAmbienceKey = '';
+  private lastPlayedRemoteSfxId = '';
+  private pendingRemoteState: LiveAudioState | null = null;
+  private pendingRemoteCampaignId = '';
+  private remoteLocalMuted = false;
+
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private emitChange() {
+    for (const fn of this.listeners) {
+      try {
+        fn();
+      } catch {
+        // ignore listener errors
+      }
+    }
+  }
 
   private ensureAudioContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -211,6 +299,49 @@ class VttAudioEngine {
     return { ...this.volumes };
   }
 
+  public getMasterDefaults(): AudioMasterDefaults {
+    return { ...this.masterDefaults };
+  }
+
+  public saveMasterDefaults(next?: Partial<AudioMasterDefaults>): AudioMasterDefaults {
+    this.masterDefaults = {
+      master: Math.max(0, Math.min(1, next?.master ?? this.volumes.master)),
+      music: Math.max(0, Math.min(1, next?.music ?? this.volumes.music)),
+      ambience: Math.max(0, Math.min(1, next?.ambience ?? this.volumes.ambience)),
+      sfx: Math.max(0, Math.min(1, next?.sfx ?? this.volumes.sfx)),
+    };
+    try {
+      window.localStorage.setItem(STORAGE_MASTER_KEY, JSON.stringify(this.masterDefaults));
+    } catch {
+      // ignore
+    }
+    this.emitChange();
+    return { ...this.masterDefaults };
+  }
+
+  public applyMasterDefaults() {
+    this.volumes.master = this.masterDefaults.master;
+    this.volumes.music = this.masterDefaults.music;
+    this.volumes.ambience = this.masterDefaults.ambience;
+    this.volumes.sfx = this.masterDefaults.sfx;
+    this.applyVolumes();
+    this.emitChange();
+  }
+
+  public isAutoPlayEnabled(): boolean {
+    return this.autoPlayEnabled;
+  }
+
+  public setAutoPlayEnabled(enabled: boolean) {
+    this.autoPlayEnabled = enabled;
+    try {
+      window.localStorage.setItem(STORAGE_AUTOPLAY_KEY, enabled ? 'true' : 'false');
+    } catch {
+      // ignore
+    }
+    this.emitChange();
+  }
+
   public getActiveTrackIds() {
     return {
       musicId: this.activeMusicTrackId,
@@ -224,6 +355,233 @@ class VttAudioEngine {
     return this.pausedLayers[layer];
   }
 
+  public getLayerDsp(layer: 'music' | 'ambience'): AudioDspSettings | null {
+    const node = this.layers[layer];
+    return node ? { ...node.dsp } : null;
+  }
+
+  private buildLayerSnapshot(layer: 'music' | 'ambience'): LiveAudioLayerSnapshot | null {
+    const track = layer === 'music' ? this.activeMusicTrack : this.activeAmbienceTrack;
+    const node = this.layers[layer];
+    if (!track || !node) return null;
+    return {
+      trackId: track.id,
+      name: (track.name || '').slice(0, 100),
+      sourceType: track.sourceType,
+      url: (track.url || '').slice(0, 1024),
+      mediaId: (track.mediaId || '').slice(0, 128),
+      dsp: {
+        startSec: Number(node.dsp.startSec) || 0,
+        speed: Number(node.dsp.speed) || 1,
+        pitch: Number(node.dsp.pitch) || 0,
+        muffle: Number(node.dsp.muffle) || 0,
+      },
+      paused: Boolean(this.pausedLayers[layer]),
+      startedAtMs: layer === 'music' ? this.musicStartedAtMs : this.ambienceStartedAtMs,
+    };
+  }
+
+  public getLiveAudioSnapshot(): LiveAudioState {
+    return {
+      music: this.buildLayerSnapshot('music'),
+      ambience: this.buildLayerSnapshot('ambience'),
+      sfxPulse: this.lastSfxPulse ? { ...this.lastSfxPulse } : null,
+      volumes: {
+        master: Math.max(0, Math.min(1, this.volumes.master)),
+        music: Math.max(0, Math.min(1, this.volumes.music)),
+        ambience: Math.max(0, Math.min(1, this.volumes.ambience)),
+        sfx: Math.max(0, Math.min(1, this.volumes.sfx)),
+        muted: Boolean(this.volumes.muted),
+      },
+      updatedAtMs: Date.now(),
+    };
+  }
+
+  public async applyRemoteAudioState(
+    remote: LiveAudioState | null | undefined,
+    campaignId: string,
+    opts?: { localMuted?: boolean }
+  ): Promise<{ blockedByAutoplay: boolean }> {
+    const localMuted = Boolean(opts?.localMuted);
+    this.remoteLocalMuted = localMuted;
+    this.pendingRemoteCampaignId = campaignId;
+
+    if (!remote) {
+      this.pendingRemoteState = null;
+      if (this.activeMusicTrackId) {
+        this.stopLayer('music', 320);
+        this.appliedRemoteMusicKey = '';
+      }
+      if (this.activeAmbienceTrackId) {
+        this.stopLayer('ambience', 320);
+        this.appliedRemoteAmbienceKey = '';
+      }
+      return { blockedByAutoplay: false };
+    }
+
+    this.pendingRemoteState = remote;
+
+    // 1. Sync volumes & mute immediately
+    const v = remote.volumes;
+    if (v) {
+      this.volumes.master = Math.max(0, Math.min(1, Number(v.master ?? 1)));
+      this.volumes.music = Math.max(0, Math.min(1, Number(v.music ?? 0.55)));
+      this.volumes.ambience = Math.max(0, Math.min(1, Number(v.ambience ?? 0.45)));
+      this.volumes.sfx = Math.max(0, Math.min(1, Number(v.sfx ?? 0.85)));
+      this.volumes.muted = Boolean(v.muted) || localMuted;
+      this.applyVolumes();
+    }
+
+    let blockedByAutoplay = false;
+
+    const syncContinuousLayer = async (
+      layer: 'music' | 'ambience',
+      snap: LiveAudioLayerSnapshot | null
+    ) => {
+      const prevKey = layer === 'music' ? this.appliedRemoteMusicKey : this.appliedRemoteAmbienceKey;
+      const setKey = (k: string) => {
+        if (layer === 'music') this.appliedRemoteMusicKey = k;
+        else this.appliedRemoteAmbienceKey = k;
+      };
+
+      if (!snap) {
+        if (this.layers[layer]) {
+          this.stopLayer(layer, 360);
+        }
+        setKey('');
+        return;
+      }
+
+      const targetKey = `${snap.trackId}::${snap.startedAtMs}`;
+      const isSameTrack = prevKey === targetKey && Boolean(this.layers[layer]);
+
+      if (!isSameTrack) {
+        if (snap.paused) {
+          // Track is paused on GM side — don't start noisy playback yet, remember key only once unpaused
+          if (this.layers[layer]) {
+            this.stopLayer(layer, 260);
+          }
+          setKey('');
+          return;
+        }
+        const syntheticTrack: AudioTrack = {
+          id: snap.trackId,
+          campaignId,
+          gmUid: '',
+          name: snap.name || 'Faixa',
+          layer,
+          sourceType: snap.sourceType,
+          synthPreset: '',
+          url: snap.url || '',
+          mediaId: snap.mediaId || '',
+          dsp: { ...DEFAULT_AUDIO_DSP, ...(snap.dsp || {}) },
+          createdAt: Date.now(),
+        };
+        try {
+          await this.playTrack(syntheticTrack, campaignId);
+          setKey(targetKey);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const name = err instanceof Error ? err.name : '';
+          if (
+            name === 'NotAllowedError' ||
+            /notallowed|autoplay|user gesture|play\(\) failed/i.test(msg)
+          ) {
+            blockedByAutoplay = true;
+          }
+        }
+        return;
+      }
+
+      // Same track already playing locally: sync pause/resume & live DSP
+      if (snap.paused && !this.pausedLayers[layer]) {
+        this.pauseLayer(layer, 360);
+      } else if (!snap.paused && this.pausedLayers[layer]) {
+        try {
+          this.resumeLayer(layer, 420);
+        } catch {
+          blockedByAutoplay = true;
+        }
+      }
+
+      const currentNode = this.layers[layer];
+      if (currentNode && snap.dsp) {
+        const cur = currentNode.dsp;
+        if (
+          Math.abs((cur.speed || 1) - (snap.dsp.speed || 1)) > 0.01 ||
+          Math.abs((cur.pitch || 0) - (snap.dsp.pitch || 0)) > 0.05 ||
+          Math.abs((cur.muffle || 0) - (snap.dsp.muffle || 0)) > 0.5
+        ) {
+          this.updateLiveDsp(layer, {
+            ...DEFAULT_AUDIO_DSP,
+            ...snap.dsp,
+          });
+        }
+      }
+    };
+
+    await syncContinuousLayer('music', remote.music);
+    await syncContinuousLayer('ambience', remote.ambience);
+
+    // 2. Sync one-shot SFX pulses (only if recent < 6.5s and not yet played)
+    const pulse = remote.sfxPulse;
+    if (
+      pulse &&
+      pulse.id &&
+      pulse.id !== this.lastPlayedRemoteSfxId &&
+      Date.now() - pulse.triggeredAtMs < 6500 &&
+      !localMuted &&
+      !remote.volumes?.muted
+    ) {
+      this.lastPlayedRemoteSfxId = pulse.id;
+      const sfxTrack: AudioTrack = {
+        id: pulse.trackId || pulse.id,
+        campaignId,
+        gmUid: '',
+        name: pulse.name || 'SFX',
+        layer: 'sfx',
+        sourceType: pulse.sourceType,
+        synthPreset: '',
+        url: pulse.url || '',
+        mediaId: pulse.mediaId || '',
+        dsp: { ...DEFAULT_AUDIO_DSP, ...(pulse.dsp || {}) },
+        createdAt: Date.now(),
+      };
+      try {
+        await this.playTrack(sfxTrack, campaignId);
+      } catch (err) {
+        const name = err instanceof Error ? err.name : '';
+        if (name === 'NotAllowedError') {
+          blockedByAutoplay = true;
+        }
+      }
+    }
+
+    return { blockedByAutoplay };
+  }
+
+  public async unlockAutoplay(): Promise<{ blockedByAutoplay: boolean }> {
+    const ctx = this.ensureAudioContext();
+    if (ctx && ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch {
+        // ignore
+      }
+    }
+    if (this.pendingRemoteState && this.pendingRemoteCampaignId) {
+      // Force retry any layer that failed to start due to autoplay
+      if (!this.layers.music) this.appliedRemoteMusicKey = '';
+      if (!this.layers.ambience) this.appliedRemoteAmbienceKey = '';
+      return this.applyRemoteAudioState(
+        this.pendingRemoteState,
+        this.pendingRemoteCampaignId,
+        { localMuted: this.remoteLocalMuted }
+      );
+    }
+    return { blockedByAutoplay: false };
+  }
+
   private clearNodeFade(node: LayerNode | null) {
     if (!node || typeof node.fadeTimerId !== 'number') return;
     window.clearInterval(node.fadeTimerId);
@@ -232,17 +590,25 @@ class VttAudioEngine {
 
   private effectiveVolume(layer: AudioLayer): number {
     if (this.volumes.muted) return 0;
-    return Math.max(0, Math.min(1, this.volumes[layer]));
+    return Math.max(0, Math.min(1, this.volumes[layer] * this.volumes.master));
+  }
+
+  public setMasterVolume(value: number) {
+    this.volumes.master = Math.max(0, Math.min(1, value));
+    this.applyVolumes();
+    this.emitChange();
   }
 
   public setVolume(layer: AudioLayer, value: number) {
     this.volumes[layer] = Math.max(0, Math.min(1, value));
     this.applyVolumes();
+    this.emitChange();
   }
 
   public setMuted(muted: boolean) {
     this.volumes.muted = muted;
     this.applyVolumes();
+    this.emitChange();
   }
 
   private setNodeVolumeImmediate(node: LayerNode, vol: number) {
@@ -351,6 +717,7 @@ class VttAudioEngine {
     const node = this.layers[layer];
     if (!node || this.pausedLayers[layer]) return;
     this.pausedLayers[layer] = true;
+    this.emitChange();
 
     this.fadeNodeTo(node, 0, fadeMs, () => {
       if (this.layers[layer] !== node || !this.pausedLayers[layer]) return;
@@ -379,6 +746,7 @@ class VttAudioEngine {
     const node = this.layers[layer];
     if (!node || !this.pausedLayers[layer]) return;
     this.pausedLayers[layer] = false;
+    this.emitChange();
 
     this.setNodeVolumeImmediate(node, 0.01);
     if (node.kind === 'youtube') {
@@ -415,9 +783,14 @@ class VttAudioEngine {
 
     if (layer === 'music') {
       this.activeMusicTrackId = null;
+      this.activeMusicTrack = null;
+      this.musicStartedAtMs = 0;
     } else {
       this.activeAmbienceTrackId = null;
+      this.activeAmbienceTrack = null;
+      this.ambienceStartedAtMs = 0;
     }
+    this.emitChange();
 
     if (!oldNode) return;
     if (fadeMs <= 0) {
@@ -446,6 +819,7 @@ class VttAudioEngine {
     const node = this.layers[layer];
     if (!node) return;
     node.dsp = { ...dsp };
+    this.emitChange();
 
     if (node.kind === 'youtube') {
       if (node.ready) {
@@ -604,12 +978,31 @@ class VttAudioEngine {
 
     if (track.layer === 'sfx') {
       this.activeSfx.add(node);
+      this.lastSfxPulse = {
+        id: `sfx_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        trackId: track.id,
+        name: (track.name || 'SFX').slice(0, 100),
+        sourceType: track.sourceType,
+        url: (track.url || '').slice(0, 1024),
+        mediaId: (track.mediaId || '').slice(0, 128),
+        dsp: { ...dsp },
+        triggeredAtMs: Date.now(),
+      };
+      this.emitChange();
     } else {
       this.stopLayer(track.layer, 480);
       this.layers[track.layer] = node;
       this.pausedLayers[track.layer] = false;
-      if (track.layer === 'music') this.activeMusicTrackId = track.id;
-      else this.activeAmbienceTrackId = track.id;
+      if (track.layer === 'music') {
+        this.activeMusicTrackId = track.id;
+        this.activeMusicTrack = { ...track, dsp: { ...dsp } };
+        this.musicStartedAtMs = Date.now();
+      } else {
+        this.activeAmbienceTrackId = track.id;
+        this.activeAmbienceTrack = { ...track, dsp: { ...dsp } };
+        this.ambienceStartedAtMs = Date.now();
+      }
+      this.emitChange();
     }
 
     await new Promise<void>((resolve, reject) => {
@@ -735,6 +1128,17 @@ class VttAudioEngine {
         if (dsp.startSec > 0 && node.el.readyState >= 1) {
           node.el.currentTime = dsp.startSec;
         }
+        this.lastSfxPulse = {
+          id: `sfx_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+          trackId: track.id,
+          name: (track.name || 'SFX').slice(0, 100),
+          sourceType: track.sourceType,
+          url: (track.url || '').slice(0, 1024),
+          mediaId: (track.mediaId || '').slice(0, 128),
+          dsp: { ...dsp },
+          triggeredAtMs: Date.now(),
+        };
+        this.emitChange();
         this.fadeNodeTo(node, this.effectiveVolume('sfx'), 140);
         return;
       }
@@ -744,11 +1148,35 @@ class VttAudioEngine {
       this.stopLayer(layer, 480);
       this.layers[layer] = node;
       this.pausedLayers[layer] = false;
-      if (layer === 'music') this.activeMusicTrackId = track.id;
-      else this.activeAmbienceTrackId = track.id;
+      if (layer === 'music') {
+        this.activeMusicTrackId = track.id;
+        this.activeMusicTrack = { ...track, dsp: { ...dsp } };
+        this.musicStartedAtMs = Date.now();
+      } else {
+        this.activeAmbienceTrackId = track.id;
+        this.activeAmbienceTrack = { ...track, dsp: { ...dsp } };
+        this.ambienceStartedAtMs = Date.now();
+      }
+      this.emitChange();
 
       this.setNodeVolumeImmediate(node, 0.01);
-      await node.el.play();
+      try {
+        await node.el.play();
+      } catch (playErr) {
+        // Clean up the node if autoplay blocked playback so retry works cleanly
+        if (this.layers[layer] === node) {
+          this.layers[layer] = null;
+          if (layer === 'music') {
+            this.activeMusicTrackId = null;
+            this.activeMusicTrack = null;
+          } else {
+            this.activeAmbienceTrackId = null;
+            this.activeAmbienceTrack = null;
+          }
+          this.destroyNode(node);
+        }
+        throw playErr;
+      }
       if (dsp.startSec > 0 && node.el.readyState >= 1) {
         node.el.currentTime = dsp.startSec;
       }

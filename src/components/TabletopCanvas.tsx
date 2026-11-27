@@ -11,6 +11,7 @@ import {
   Lock,
   Maximize2,
   Moon,
+  RotateCcw,
   Skull,
   SlidersHorizontal,
   Swords,
@@ -19,6 +20,8 @@ import {
   Upload,
   X,
   Zap,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import type {
   ActiveDuelState,
@@ -234,6 +237,18 @@ export function TabletopCanvas({
   const [isDragOverFile, setIsDragOverFile] = useState(false);
   const [dragHoverCoords, setDragHoverCoords] = useState<{ nx: number; ny: number } | null>(null);
 
+  // Interactive Map Zoom & Pan (transforms the entire unified map stage so tokens/walls/grid/fog NEVER shift!)
+  const [mapZoom, setMapZoom] = useState(1);
+  const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const panStartRef = useRef<{ clientX: number; clientY: number; startX: number; startY: number } | null>(null);
+
+  // Reset zoom & pan cleanly when switching to a different scene
+  useEffect(() => {
+    setMapZoom(1);
+    setMapPan({ x: 0, y: 0 });
+  }, [scene?.id]);
+
   // Seamless camera zoom origin for transitioning into/out of 3D Duel Mode
   const effectiveDuel = activeDuelProp !== undefined ? activeDuelProp : scene?.activeDuel || null;
   const [duelZoomOrigin, setDuelZoomOrigin] = useState<{ x: number; y: number }>({ x: 0.5, y: 0.5 });
@@ -375,10 +390,16 @@ export function TabletopCanvas({
     });
     obs.observe(el);
 
-    // Block accidental Ctrl+Wheel browser zoom while hovering over the map stage so token/wall positioning stays 100% locked
+    // Ctrl+Wheel zooms the unified map stage smoothly (never browser page zoom) so token/wall positioning stays 100% locked
     const handleWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.15 : -0.15;
+        setMapZoom((z) => {
+          const next = Math.max(0.6, Math.min(3.5, Number((z + delta).toFixed(2))));
+          if (next <= 1) setMapPan({ x: 0, y: 0 });
+          return next;
+        });
       }
     };
     el.addEventListener('wheel', handleWheel, { passive: false });
@@ -480,6 +501,7 @@ export function TabletopCanvas({
         id: `img_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
         name: cleanName,
         layerKind: 'image',
+        tokenCategory: 'item',
         shape: 'rect',
         x: Number(Math.max(0.05, Math.min(0.95, nx)).toFixed(4)),
         y: Number(Math.max(0.05, Math.min(0.95, ny)).toFixed(4)),
@@ -707,6 +729,21 @@ export function TabletopCanvas({
   function handleStagePointerDown(e: React.PointerEvent) {
     if (!scene) return;
     setContextMenu(null);
+
+    // Middle-click or Alt+Left-click pans the zoomed map smoothly without altering any token or wall coordinates!
+    if (e.button === 1 || (e.button === 0 && e.altKey)) {
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setIsPanning(true);
+      panStartRef.current = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        startX: mapPan.x,
+        startY: mapPan.y,
+      };
+      return;
+    }
+
     if (e.button !== 0) return;
 
     const { px, py, nx, ny } = getRelativeCoords(e.clientX, e.clientY);
@@ -836,6 +873,17 @@ export function TabletopCanvas({
 
   function handleStagePointerMove(e: React.PointerEvent) {
     if (!scene) return;
+
+    if (isPanning && panStartRef.current) {
+      const dx = e.clientX - panStartRef.current.clientX;
+      const dy = e.clientY - panStartRef.current.clientY;
+      setMapPan({
+        x: panStartRef.current.startX + dx,
+        y: panStartRef.current.startY + dy,
+      });
+      return;
+    }
+
     const { px, py, nx, ny } = getRelativeCoords(e.clientX, e.clientY);
     lastHoverCoordsRef.current = { nx, ny };
 
@@ -1016,6 +1064,11 @@ export function TabletopCanvas({
   }
 
   function handleStagePointerUp() {
+    if (isPanning) {
+      setIsPanning(false);
+      panStartRef.current = null;
+      return;
+    }
     if (ruler) {
       setRuler(null);
     }
@@ -1360,7 +1413,9 @@ export function TabletopCanvas({
     const clampedY = Number(Math.max(0.03, Math.min(0.97, ny)).toFixed(4));
 
     // 1. Check if the user dragged a Token / Asset from the Vault, Character Sheets, or New Token Builder
-    const tokenPayloadRaw = e.dataTransfer.getData('application/x-folio-token');
+    const tokenPayloadRaw =
+      e.dataTransfer.getData('application/x-folio-token') ||
+      e.dataTransfer.getData('application/x-folio-sheet-token');
     if (tokenPayloadRaw && scene) {
       try {
         const parsed = JSON.parse(tokenPayloadRaw) as Partial<SceneToken> & {
@@ -1374,6 +1429,9 @@ export function TabletopCanvas({
           id: `tok_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
           name: (parsed.name || 'Token').trim(),
           layerKind: parsed.layerKind || (isRect ? 'image' : 'token'),
+          tokenCategory:
+            parsed.tokenCategory ||
+            (parsed.sheetId ? 'player' : isRect ? 'item' : 'npc'),
           shape: parsed.shape || (isRect ? 'rect' : 'circle'),
           sheetId: parsed.sheetId,
           x: clampedX,
@@ -1387,6 +1445,8 @@ export function TabletopCanvas({
           shadow: parsed.shadow || 'soft',
           imageUrl: parsed.imageUrl || '',
           mediaId: parsed.mediaId || '',
+          combatSpriteUrl: parsed.combatSpriteUrl || '',
+          combatSpriteMediaId: parsed.combatSpriteMediaId || '',
           notes: parsed.notes || '',
           hiddenFromPlayers: Boolean(parsed.hiddenFromPlayers),
           visionEnabled:
@@ -1480,10 +1540,14 @@ export function TabletopCanvas({
   const scaledOffsetX = (scene.grid.offsetX || 0) * mapScale;
   const scaledOffsetY = (scene.grid.offsetY || 0) * mapScale;
 
-  // Seamless Camera Zoom Transition into/out of 3D Duel Mode
+  // Seamless Camera Zoom Transition into/out of 3D Duel Mode + Interactive Map Zoom
   const isDuelActive = Boolean(effectiveDuel);
-  const effectiveStageScale = isDuelActive ? stageDisplayScale * 2.15 : stageDisplayScale;
-  const effectiveTransformOrigin = `${(duelZoomOrigin.x * 100).toFixed(1)}% ${(duelZoomOrigin.y * 100).toFixed(1)}%`;
+  const effectiveStageScale = isDuelActive
+    ? stageDisplayScale * 2.15
+    : stageDisplayScale * mapZoom;
+  const effectiveTransformOrigin = isDuelActive
+    ? `${(duelZoomOrigin.x * 100).toFixed(1)}% ${(duelZoomOrigin.y * 100).toFixed(1)}%`
+    : '50% 50%';
 
   function renderBrushStrokeSvg(stroke: {
     id: string;
@@ -1678,11 +1742,19 @@ export function TabletopCanvas({
         style={{
           width: `${mapBoxSize.width}px`,
           height: `${mapBoxSize.height}px`,
-          transform: `scale(${effectiveStageScale})`,
+          transform: isDuelActive
+            ? `scale(${effectiveStageScale})`
+            : `translate(${mapPan.x}px, ${mapPan.y}px) scale(${effectiveStageScale})`,
           transformOrigin: effectiveTransformOrigin,
-          transition: 'transform 650ms cubic-bezier(0.16, 1, 0.3, 1)',
+          transition: isPanning
+            ? 'none'
+            : isDuelActive
+              ? 'transform 650ms cubic-bezier(0.16, 1, 0.3, 1)'
+              : 'transform 160ms ease-out',
         }}
-        className={`relative overflow-hidden shadow-2xl bg-stone-950 shrink-0 ${cursorClass}`}
+        className={`relative overflow-hidden shadow-2xl bg-stone-950 shrink-0 ${
+          isPanning ? 'cursor-grabbing' : cursorClass
+        }`}
       >
         {/* Live Drag-and-Drop Target Reticle on the Map before placing token/image */}
         {mode === 'gm' && isDragOverFile && dragHoverCoords && (
@@ -2721,6 +2793,61 @@ export function TabletopCanvas({
             </button>
           </div>
         )}
+
+      {/* Floating Map Zoom & Pan Controls (Zooms unified stage without shifting tokens, walls, or fog) */}
+      {(mode === 'gm' || mode === 'player') && !effectiveDuel && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute bottom-3 left-3 z-20 vtt-surface/95 backdrop-blur-sm border vtt-border flex items-center gap-0.5 p-0.5 shadow-lg"
+          title="Ctrl+Roda para dar zoom no mapa · Botão do meio ou Alt+Arrastar para mover"
+        >
+          <button
+            type="button"
+            onClick={() => setMapZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
+            disabled={mapZoom <= 0.5}
+            className="p-1.5 vtt-muted hover:opacity-100 disabled:opacity-30 transition-opacity"
+            title="Afastar zoom do mapa"
+            aria-label="Afastar zoom"
+          >
+            <ZoomOut className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMapZoom(1);
+              setMapPan({ x: 0, y: 0 });
+            }}
+            className="px-2 py-1 text-[11px] font-semibold tabular-nums hover:vtt-subtle transition-colors min-w-[46px] text-center"
+            title="Clique para resetar zoom e enquadramento (100%)"
+          >
+            {Math.round(mapZoom * 100)}%
+          </button>
+          <button
+            type="button"
+            onClick={() => setMapZoom((z) => Math.min(4, Number((z + 0.25).toFixed(2))))}
+            disabled={mapZoom >= 4}
+            className="p-1.5 vtt-muted hover:opacity-100 disabled:opacity-30 transition-opacity"
+            title="Aproximar zoom do mapa"
+            aria-label="Aproximar zoom"
+          >
+            <ZoomIn className="w-3.5 h-3.5" />
+          </button>
+          {(mapZoom !== 1 || mapPan.x !== 0 || mapPan.y !== 0) && (
+            <button
+              type="button"
+              onClick={() => {
+                setMapZoom(1);
+                setMapPan({ x: 0, y: 0 });
+              }}
+              className="p-1.5 border-l vtt-border vtt-accent-text hover:vtt-subtle transition-colors"
+              title="Resetar enquadramento do mapa"
+              aria-label="Resetar zoom do mapa"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

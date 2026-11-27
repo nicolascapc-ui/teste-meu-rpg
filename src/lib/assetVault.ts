@@ -3,6 +3,8 @@ export interface VaultAssetItem {
   name: string;
   imageUrl: string;
   mediaId: string;
+  combatSpriteUrl?: string;
+  combatSpriteMediaId?: string;
   defaultKind: 'image' | 'token';
   widthPx: number;
   heightPx: number;

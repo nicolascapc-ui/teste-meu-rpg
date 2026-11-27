@@ -3,22 +3,32 @@ import type { User } from 'firebase/auth';
 import {
   ArrowLeft,
   BookOpen,
+  Compass,
   Dices,
   FileSpreadsheet,
+  Hourglass,
   Image as ImageIcon,
   Mail,
+  MessageSquare,
+  Moon,
+  Sparkles,
+  Swords,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import type {
   ActiveHandoutProjection,
   CharacterSheet,
   DiceRoll,
   Handout,
+  InterludeIconId,
   LivePublicWiki,
   LiveTableState,
   SheetBlock,
 } from '../types/vtt';
 import { applyCampaignTheme, getSceneEffects } from '../lib/themes';
 import { evaluateDiceFormula, isDiceFormula, type RollMode } from '../lib/diceEngine';
+import { resolveMediaUrl } from '../lib/mediaStore';
 import {
   createCharacterSheet,
   deleteCharacterSheet,
@@ -31,15 +41,36 @@ import {
   subscribeSheets,
   updateCharacterSheet,
 } from '../lib/vttService';
+import { useSyncedLiveAudio } from '../hooks/useSyncedLiveAudio';
 import { CharacterSheetPanel } from '../components/CharacterSheetPanel';
 import { DiceChatPanel } from '../components/DiceChatPanel';
+import { CampaignChatPanel } from '../components/CampaignChatPanel';
 import { TabletopCanvas } from '../components/TabletopCanvas';
 import { SceneEffectsStage } from '../components/SceneEffectsOverlay';
 import { HandoutOverlay } from '../components/HandoutOverlay';
 import { DiceRollOverlay, type ActiveDiceAnimation } from '../components/DiceRollOverlay';
 import { DuelArena3DOverlay } from '../components/DuelArena3DOverlay';
 
-type MobileTab = 'sheet' | 'dice' | 'clues' | 'scene';
+type MobileTab = 'sheet' | 'dice' | 'chat' | 'clues' | 'scene';
+
+function renderInterludeIcon(icon: InterludeIconId | undefined) {
+  switch (icon) {
+    case 'none':
+      return null;
+    case 'hourglass':
+      return <Hourglass className="w-7 h-7 vtt-accent-text mx-auto animate-pulse" />;
+    case 'compass':
+      return <Compass className="w-7 h-7 vtt-accent-text mx-auto" />;
+    case 'book':
+      return <BookOpen className="w-7 h-7 vtt-accent-text mx-auto" />;
+    case 'moon':
+      return <Moon className="w-7 h-7 vtt-accent-text mx-auto" />;
+    case 'swords':
+      return <Swords className="w-7 h-7 vtt-accent-text mx-auto" />;
+    default:
+      return <Sparkles className="w-7 h-7 vtt-accent-text mx-auto animate-pulse" />;
+  }
+}
 
 interface PlayerMobileViewProps {
   user: User;
@@ -68,8 +99,26 @@ export function PlayerMobileView({
   const [openedPrivateHandout, setOpenedPrivateHandout] = useState<ActiveHandoutProjection | null>(null);
   const [toast, setToast] = useState('');
   const [activeRollAnim, setActiveRollAnim] = useState<ActiveDiceAnimation | null>(null);
+  const [interludeBgUrl, setInterludeBgUrl] = useState('');
+
+  const syncedAudio = useSyncedLiveAudio(campaignId, liveState?.liveAudio);
 
   const clearRollAnim = useCallback(() => setActiveRollAnim(null), []);
+
+  useEffect(() => {
+    let alive = true;
+    const cfg = liveState?.interludeConfig;
+    if (!campaignId || (!cfg?.mediaId && !cfg?.imageUrl)) {
+      setInterludeBgUrl('');
+      return;
+    }
+    void resolveMediaUrl(cfg.mediaId, cfg.imageUrl, campaignId).then((url) => {
+      if (alive) setInterludeBgUrl(url);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [campaignId, liveState?.interludeConfig?.mediaId, liveState?.interludeConfig?.imageUrl]);
 
   useEffect(() => {
     if (!toast) return;
@@ -123,11 +172,16 @@ export function PlayerMobileView({
   }, [liveState?.theme]);
 
   const playerViewMode = liveState?.activeScene?.playerViewMode || 'scene';
-  const activeDuel = liveState?.activeScene?.activeDuel || null;
+  const rawDuel = liveState?.activeScene?.activeDuel || null;
+  const activeDuel =
+    rawDuel && liveState?.activeScene && rawDuel.sceneId === liveState.activeScene.id
+      ? rawDuel
+      : null;
+  const activeDuelKey = activeDuel ? `${liveState?.activeScene?.id || ''}:${activeDuel.id}` : '';
 
-  // Automatically focus the section chosen by the GM when the GM changes playerViewMode, or switch to 'scene' when a 3D Duel starts
+  // Automatically focus the section chosen by the GM when the GM changes playerViewMode, or switch to 'scene' when entering/returning to a 3D Duel
   useEffect(() => {
-    if (activeDuel) {
+    if (activeDuelKey) {
       setTab('scene');
       return;
     }
@@ -140,7 +194,7 @@ export function PlayerMobileView({
     } else if (mode === 'dice') {
       setTab('dice');
     }
-  }, [liveState?.activeScene?.playerViewMode, activeDuel]);
+  }, [liveState?.activeScene?.playerViewMode, activeDuelKey]);
 
   const uploadContext = useMemo(
     () => ({
@@ -254,7 +308,7 @@ export function PlayerMobileView({
   return (
     <div className="h-[100dvh] w-full flex flex-col vtt-canvas overflow-hidden">
       {/* Compact Top App Bar */}
-      <header className="h-12 px-3 border-b vtt-border vtt-surface flex items-center justify-between gap-3 shrink-0">
+      <header className="h-12 px-3 border-b vtt-border vtt-surface flex items-center justify-between gap-2 shrink-0">
         <button
           type="button"
           onClick={onExit}
@@ -266,10 +320,48 @@ export function PlayerMobileView({
         <h1 className="text-sm font-bold font-typewriter truncate flex-1 text-center">
           {liveState?.campaignTitle || 'Mesa Digital'}
         </h1>
-        <span className="text-[11px] vtt-muted whitespace-nowrap shrink-0">
-          {privateHandouts.length > 0 ? `${privateHandouts.length} pista(s)` : 'Jogador'}
-        </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {(syncedAudio.hasActiveAudio || syncedAudio.localMuted) && (
+            <button
+              type="button"
+              onClick={syncedAudio.toggleLocalMute}
+              className={`min-h-[36px] min-w-[36px] px-2 flex items-center justify-center border vtt-border transition-colors ${
+                syncedAudio.localMuted ? 'vtt-subtle text-red-400' : 'vtt-subtle vtt-accent-text'
+              }`}
+              aria-label={syncedAudio.localMuted ? 'Ativar áudio da mesa' : 'Silenciar áudio da mesa'}
+              title={
+                syncedAudio.localMuted
+                  ? 'Áudio mutado no seu dispositivo (toque para ouvir)'
+                  : `Ouvindo: ${syncedAudio.activeTrackLabel || 'Trilha da mesa'} (toque para silenciar)`
+              }
+            >
+              {syncedAudio.localMuted ? (
+                <VolumeX className="w-4 h-4" />
+              ) : (
+                <Volume2 className="w-4 h-4" />
+              )}
+            </button>
+          )}
+          <span className="text-[11px] vtt-muted whitespace-nowrap">
+            {privateHandouts.length > 0 ? `${privateHandouts.length} pista(s)` : 'Jogador'}
+          </span>
+        </div>
       </header>
+
+      {/* One-Tap Autoplay Unlock Banner when GM starts music/ambience on mobile/browser */}
+      {syncedAudio.blockedByAutoplay && syncedAudio.hasActiveAudio && !syncedAudio.localMuted && (
+        <button
+          type="button"
+          onClick={() => void syncedAudio.unlockAudio()}
+          className="w-full px-3 py-2 text-xs font-semibold vtt-accent-btn flex items-center justify-center gap-2 shrink-0 border-b vtt-border"
+        >
+          <Volume2 className="w-4 h-4 shrink-0" />
+          <span className="truncate">
+            Toque para ativar o áudio da mesa
+            {syncedAudio.activeTrackLabel ? ` · ${syncedAudio.activeTrackLabel}` : ''}
+          </span>
+        </button>
+      )}
 
       {/* Main Content Area */}
       <main className="flex-1 min-h-0 overflow-hidden relative max-w-4xl w-full mx-auto">
@@ -322,6 +414,36 @@ export function PlayerMobileView({
             rolls={mergedRolls}
             isGM={false}
             onExecuteInput={(p) => handleRoll(p)}
+          />
+        )}
+
+        {tab === 'chat' && liveState && campaignId && (
+          <CampaignChatPanel
+            campaignId={campaignId}
+            gmUid={liveState.gmUid}
+            gmName="Mestre"
+            currentUid={user.uid}
+            currentName={sheets[0]?.name || user.displayName || 'Jogador'}
+            isGM={false}
+            uploadContext={uploadContext}
+            sheets={sheets}
+            onAddItemToSheet={async (sheetId, itemBlock) => {
+              const target = sheets.find((s) => s.id === sheetId);
+              if (!target) return;
+              await updateCharacterSheet(campaignId, target.id, {
+                name: target.name,
+                subtitle: target.subtitle,
+                templateId: target.templateId,
+                mode: target.mode,
+                avatarUrl: target.avatarUrl || '',
+                avatarMediaId: target.avatarMediaId || '',
+                pdfUrl: target.pdfUrl,
+                pdfMediaId: target.pdfMediaId,
+                pdfFileName: target.pdfFileName,
+                blocks: [...target.blocks, itemBlock],
+              });
+            }}
+            onNotify={setToast}
           />
         )}
 
@@ -414,16 +536,28 @@ export function PlayerMobileView({
                 activeDuel={activeDuel}
               />
               {!activeDuel && playerViewMode === 'standby' && (
-                <div className="absolute inset-0 z-30 vtt-canvas flex flex-col items-center justify-center p-6 text-center">
-                  <div className="max-w-sm space-y-3 p-6 border vtt-border vtt-surface shadow-xl">
-                    <p className="text-[11px] uppercase tracking-widest vtt-muted">
-                      Cena em Preparação
-                    </p>
+                <div className="absolute inset-0 z-30 vtt-canvas flex flex-col items-center justify-center p-6 text-center overflow-hidden">
+                  {interludeBgUrl && (
+                    <>
+                      <img
+                        src={interludeBgUrl}
+                        alt={liveState?.interludeConfig?.title || liveState?.campaignTitle || 'Interlúdio'}
+                        referrerPolicy="no-referrer"
+                        className="absolute inset-0 w-full h-full object-cover"
+                      />
+                      <div className="absolute inset-0 bg-black/55 backdrop-blur-[2px]" />
+                    </>
+                  )}
+                  <div className="relative z-10 max-w-sm w-full space-y-3 p-6 border vtt-border vtt-surface/90 backdrop-blur-md shadow-xl">
+                    {renderInterludeIcon(liveState?.interludeConfig?.icon)}
                     <h2 className="text-xl font-bold font-typewriter">
-                      {liveState?.campaignTitle || 'Mesa Digital'}
+                      {liveState?.interludeConfig?.title?.trim() ||
+                        liveState?.campaignTitle ||
+                        'Mesa Digital'}
                     </h2>
-                    <p className="text-xs vtt-muted">
-                      O mestre está preparando o próximo cenário nos bastidores. Você pode consultar sua Ficha, Dados ou Pistas abaixo.
+                    <p className="text-xs vtt-muted leading-relaxed whitespace-pre-wrap">
+                      {liveState?.interludeConfig?.subtitle?.trim() ||
+                        'O mestre está preparando o próximo cenário nos bastidores. Você pode consultar sua Ficha, Dados, Chat ou Pistas abaixo.'}
                     </p>
                   </div>
                 </div>
@@ -468,12 +602,13 @@ export function PlayerMobileView({
       {/* Thumb-Zone Bottom Navigation Bar */}
       <nav
         aria-label="Navegação do jogador"
-        className="h-14 border-t vtt-border vtt-surface grid grid-cols-4 items-center shrink-0"
+        className="h-14 border-t vtt-border vtt-surface grid grid-cols-5 items-center shrink-0"
       >
         {(
           [
             ['sheet', 'Ficha', FileSpreadsheet],
             ['dice', 'Dados', Dices],
+            ['chat', 'Chat', MessageSquare],
             ['clues', 'Pistas', BookOpen],
             ['scene', 'Cena', ImageIcon],
           ] as const
