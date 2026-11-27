@@ -15,6 +15,7 @@ import {
 import { db, handleFirestoreError, OperationType } from './firebase';
 import { DEFAULT_THEME, sanitizeTheme } from './themes';
 import { createBlankSheetBlocks, DEFAULT_WIKI_FOLDERS, STARTER_ASSETS } from './templates';
+import { sanitizePublicInvestigation } from './investigationEngine';
 import {
   FIELD_LIMITS,
   type ActiveDuelState,
@@ -37,6 +38,8 @@ import {
   type Handout,
   type HandoutKind,
   type InterludeConfig,
+  type InvestigationJournalEntry,
+  type InvestigationSceneData,
   type LiveAudioState,
   type LiveCampaignChat,
   type LivePublicWiki,
@@ -152,10 +155,15 @@ export function toLiveSceneSnapshot(
   scene: Scene,
   activeDuel?: ActiveDuelState | null,
   duelConfig?: SceneDuelConfig,
-  playerViewMode?: 'scene' | 'clues' | 'dice' | 'standby'
+  playerViewMode?: 'scene' | 'clues' | 'dice' | 'standby',
+  activeInvestigation?: InvestigationSceneData | null
 ): LiveSceneSnapshot {
   const scopedDuel =
     activeDuel && activeDuel.sceneId === scene.id ? activeDuel : null;
+  const scopedInvestigation =
+    activeInvestigation && activeInvestigation.sceneId === scene.id
+      ? sanitizePublicInvestigation(activeInvestigation)
+      : null;
   return stripUndefinedDeep({
     id: scene.id,
     name: scene.name,
@@ -171,6 +179,7 @@ export function toLiveSceneSnapshot(
     tokens: (scene.tokens || []).filter((t) => !t.hiddenFromPlayers),
     activeDuel: sanitizePublicDuelState(scopedDuel),
     duelConfig,
+    activeInvestigation: scopedInvestigation,
     playerViewMode: playerViewMode || 'scene',
   });
 }
@@ -182,11 +191,13 @@ export async function syncLiveDuelState(
   currentLiveState: LiveTableState | null,
   duelConfig?: SceneDuelConfig
 ) {
+  const sameLiveScene = currentLiveState?.activeScene?.id === scene.id;
   const snapshot = toLiveSceneSnapshot(
     scene,
     activeDuel,
     duelConfig || currentLiveState?.activeScene?.duelConfig,
-    currentLiveState?.activeScene?.playerViewMode || 'scene'
+    currentLiveState?.activeScene?.playerViewMode || 'scene',
+    activeDuel ? null : sameLiveScene ? currentLiveState?.activeScene?.activeInvestigation : null
   );
   if (currentLiveState) {
     broadcastLiveState(campaignId, {
@@ -202,6 +213,87 @@ export async function syncLiveDuelState(
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
   }
+}
+
+export async function syncLiveInvestigationState(
+  campaignId: string,
+  scene: Scene,
+  activeInvestigation: InvestigationSceneData | null,
+  currentLiveState: LiveTableState | null
+) {
+  const sameLiveScene = currentLiveState?.activeScene?.id === scene.id;
+  const snapshot = toLiveSceneSnapshot(
+    scene,
+    activeInvestigation ? null : sameLiveScene ? currentLiveState?.activeScene?.activeDuel : null,
+    sameLiveScene ? currentLiveState?.activeScene?.duelConfig : undefined,
+    currentLiveState?.activeScene?.playerViewMode || 'scene',
+    activeInvestigation
+  );
+  if (currentLiveState) {
+    broadcastLiveState(campaignId, {
+      ...currentLiveState,
+      activeScene: snapshot,
+    });
+  }
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      activeScene: snapshot,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
+  }
+}
+
+export async function saveInvestigationJournalEntry(
+  campaignId: string,
+  entry: InvestigationJournalEntry,
+  currentLiveState: LiveTableState | null
+): Promise<InvestigationJournalEntry[]> {
+  const existing = currentLiveState?.investigationJournal || [];
+  const filtered = existing.filter(
+    (item) => !(item.investigationId === entry.investigationId && item.hotspotId === entry.hotspotId)
+  );
+  const next = [stripUndefinedDeep(entry), ...filtered].slice(0, 80);
+  if (currentLiveState) {
+    broadcastLiveState(campaignId, {
+      ...currentLiveState,
+      investigationJournal: next,
+    });
+  }
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      investigationJournal: next,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
+  }
+  return next;
+}
+
+export async function removeInvestigationJournalEntry(
+  campaignId: string,
+  entryId: string,
+  currentLiveState: LiveTableState | null
+): Promise<InvestigationJournalEntry[]> {
+  const existing = currentLiveState?.investigationJournal || [];
+  const next = existing.filter((item) => item.id !== entryId);
+  if (currentLiveState) {
+    broadcastLiveState(campaignId, {
+      ...currentLiveState,
+      investigationJournal: next,
+    });
+  }
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      investigationJournal: next,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
+  }
+  return next;
 }
 
 export async function syncLiveAudioState(
@@ -942,14 +1034,18 @@ export async function activateScene(
   scene: Scene,
   currentLiveState: LiveTableState | null,
   activeDuel?: ActiveDuelState | null,
-  duelConfig?: SceneDuelConfig
+  duelConfig?: SceneDuelConfig,
+  activeInvestigation?: InvestigationSceneData | null
 ) {
   const scopedDuel = activeDuel && activeDuel.sceneId === scene.id ? activeDuel : null;
+  const scopedInv =
+    activeInvestigation && activeInvestigation.sceneId === scene.id ? activeInvestigation : null;
   const snapshot = toLiveSceneSnapshot(
     scene,
     scopedDuel,
     duelConfig,
-    currentLiveState?.activeScene?.playerViewMode || 'scene'
+    currentLiveState?.activeScene?.playerViewMode || 'scene',
+    scopedInv
   );
   if (currentLiveState) {
     broadcastLiveState(campaignId, { ...currentLiveState, activeScene: snapshot });
@@ -1035,7 +1131,8 @@ export async function updateSceneGrid(
     updatedScene,
     sameLiveScene ? liveState?.activeScene?.activeDuel : null,
     sameLiveScene ? liveState?.activeScene?.duelConfig : undefined,
-    liveState?.activeScene?.playerViewMode || 'scene'
+    liveState?.activeScene?.playerViewMode || 'scene',
+    sameLiveScene ? liveState?.activeScene?.activeInvestigation : null
   );
   if (isActive && liveState) {
     broadcastLiveState(campaignId, { ...liveState, activeScene: snapshot });
@@ -1076,7 +1173,8 @@ export async function updateSceneFog(
     updatedScene,
     sameLiveScene ? liveState?.activeScene?.activeDuel : null,
     sameLiveScene ? liveState?.activeScene?.duelConfig : undefined,
-    liveState?.activeScene?.playerViewMode || 'scene'
+    liveState?.activeScene?.playerViewMode || 'scene',
+    sameLiveScene ? liveState?.activeScene?.activeInvestigation : null
   );
   if (isActive && liveState) {
     broadcastLiveState(campaignId, { ...liveState, activeScene: snapshot });
@@ -1118,7 +1216,8 @@ export async function updateSceneWalls(
     updatedScene,
     sameLiveScene ? liveState?.activeScene?.activeDuel : null,
     sameLiveScene ? liveState?.activeScene?.duelConfig : undefined,
-    liveState?.activeScene?.playerViewMode || 'scene'
+    liveState?.activeScene?.playerViewMode || 'scene',
+    sameLiveScene ? liveState?.activeScene?.activeInvestigation : null
   );
   if (isActive && liveState) {
     broadcastLiveState(campaignId, { ...liveState, activeScene: snapshot });
@@ -1159,7 +1258,8 @@ export async function updateSceneTokens(
     updatedScene,
     sameLiveScene ? liveState?.activeScene?.activeDuel : null,
     sameLiveScene ? liveState?.activeScene?.duelConfig : undefined,
-    liveState?.activeScene?.playerViewMode || 'scene'
+    liveState?.activeScene?.playerViewMode || 'scene',
+    sameLiveScene ? liveState?.activeScene?.activeInvestigation : null
   );
   if (isActive && liveState) {
     broadcastLiveState(campaignId, { ...liveState, activeScene: snapshot });

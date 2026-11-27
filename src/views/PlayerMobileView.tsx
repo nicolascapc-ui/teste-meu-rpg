@@ -34,6 +34,8 @@ import {
   deleteCharacterSheet,
   joinCampaignByRoomCode,
   recordDiceRoll,
+  removeInvestigationJournalEntry,
+  saveInvestigationJournalEntry,
   subscribeLiveState,
   subscribeLiveWiki,
   subscribePlayerPrivateHandouts,
@@ -41,6 +43,7 @@ import {
   subscribeSheets,
   updateCharacterSheet,
 } from '../lib/vttService';
+import { DIFFICULTY_META } from '../lib/investigationEngine';
 import { useSyncedLiveAudio } from '../hooks/useSyncedLiveAudio';
 import { CharacterSheetPanel } from '../components/CharacterSheetPanel';
 import { DiceChatPanel } from '../components/DiceChatPanel';
@@ -50,6 +53,7 @@ import { SceneEffectsStage } from '../components/SceneEffectsOverlay';
 import { HandoutOverlay } from '../components/HandoutOverlay';
 import { DiceRollOverlay, type ActiveDiceAnimation } from '../components/DiceRollOverlay';
 import { DuelArena3DOverlay } from '../components/DuelArena3DOverlay';
+import { InvestigationSceneOverlay } from '../components/InvestigationSceneOverlay';
 
 type MobileTab = 'sheet' | 'dice' | 'chat' | 'clues' | 'scene';
 
@@ -179,9 +183,21 @@ export function PlayerMobileView({
       : null;
   const activeDuelKey = activeDuel ? `${liveState?.activeScene?.id || ''}:${activeDuel.id}` : '';
 
-  // Automatically focus the section chosen by the GM when the GM changes playerViewMode, or switch to 'scene' when entering/returning to a 3D Duel
+  const rawInvestigation = liveState?.activeScene?.activeInvestigation || null;
+  const activeInvestigation =
+    rawInvestigation &&
+    rawInvestigation.isLiveToPlayers &&
+    liveState?.activeScene &&
+    rawInvestigation.sceneId === liveState.activeScene.id
+      ? rawInvestigation
+      : null;
+  const activeInvestigationKey = activeInvestigation
+    ? `${liveState?.activeScene?.id || ''}:${activeInvestigation.id}`
+    : '';
+
+  // Automatically focus the section chosen by the GM when the GM changes playerViewMode, or switch to 'scene' when entering a 3D Duel or Investigation Scene
   useEffect(() => {
-    if (activeDuelKey) {
+    if (activeDuelKey || activeInvestigationKey) {
       setTab('scene');
       return;
     }
@@ -194,7 +210,7 @@ export function PlayerMobileView({
     } else if (mode === 'dice') {
       setTab('dice');
     }
-  }, [liveState?.activeScene?.playerViewMode, activeDuelKey]);
+  }, [liveState?.activeScene?.playerViewMode, activeDuelKey, activeInvestigationKey]);
 
   const uploadContext = useMemo(
     () => ({
@@ -496,6 +512,43 @@ export function PlayerMobileView({
               )}
             </section>
 
+            {/* Session Investigation Journal (Diário da Investigação) */}
+            {(liveState?.investigationJournal?.length || 0) > 0 && (
+              <section className="space-y-2.5">
+                <div className="flex items-center justify-between border-b vtt-border pb-2">
+                  <h2 className="text-sm font-bold font-typewriter">Diário da Investigação</h2>
+                  <span className="text-xs vtt-muted tabular-nums">
+                    {liveState?.investigationJournal?.length || 0}
+                  </span>
+                </div>
+                <div className="space-y-2.5">
+                  {(liveState?.investigationJournal || []).map((entry) => {
+                    const diffMeta = DIFFICULTY_META[entry.difficulty || 1];
+                    return (
+                      <article
+                        key={entry.id}
+                        className="vtt-surface border vtt-border p-3.5 space-y-1.5"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[11px] vtt-muted truncate">
+                            {entry.investigationTitle} ·{' '}
+                            <span style={{ color: diffMeta.color }}>{diffMeta.shortLabel}</span>
+                          </p>
+                          <span className="text-[10px] vtt-muted shrink-0">
+                            {entry.notedByName}
+                          </span>
+                        </div>
+                        <h3 className="text-sm font-bold font-typewriter">{entry.title}</h3>
+                        <p className="text-xs leading-relaxed whitespace-pre-wrap">
+                          {entry.description}
+                        </p>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
             {/* Public Campaign Wiki Notes */}
             <section className="space-y-2.5">
               <div className="flex items-center justify-between border-b vtt-border pb-2">
@@ -537,7 +590,7 @@ export function PlayerMobileView({
                 mode="player"
                 activeDuel={activeDuel}
               />
-              {!activeDuel && playerViewMode === 'standby' && (
+              {!activeDuel && !activeInvestigation && playerViewMode === 'standby' && (
                 <div className="absolute inset-0 z-30 vtt-canvas flex flex-col items-center justify-center p-6 text-center overflow-hidden">
                   {interludeBgUrl && (
                     <>
@@ -590,6 +643,46 @@ export function PlayerMobileView({
                   });
                 }}
               />
+
+              {/* Point & Click Investigation Scene for Players */}
+              {activeInvestigation && !activeDuel && (
+                <InvestigationSceneOverlay
+                  campaignId={campaignId}
+                  currentUserUid={user.uid}
+                  currentUserName={sheets[0]?.name || user.displayName || 'Jogador'}
+                  mode="player"
+                  investigation={activeInvestigation}
+                  journalEntries={liveState?.investigationJournal || []}
+                  onNoteClue={async (hotspot) => {
+                    if (!campaignId) return;
+                    const noteAuthor = sheets[0]?.name || user.displayName || 'Jogador';
+                    await saveInvestigationJournalEntry(
+                      campaignId,
+                      {
+                        id: `jrn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                        investigationId: activeInvestigation.id,
+                        investigationTitle: activeInvestigation.title || 'Investigação',
+                        hotspotId: hotspot.id,
+                        title: hotspot.title || 'Pista',
+                        description: hotspot.description || '',
+                        zoomImageUrl: hotspot.zoomImageUrl || '',
+                        zoomMediaId: hotspot.zoomMediaId || '',
+                        difficulty: hotspot.difficulty || 1,
+                        notedByUid: user.uid,
+                        notedByName: noteAuthor,
+                        notedAtMs: Date.now(),
+                      },
+                      liveState
+                    );
+                    setToast(`"${hotspot.title || 'Pista'}" anotada no Diário da Investigação!`);
+                  }}
+                  onRemoveJournalEntry={async (entryId) => {
+                    if (!campaignId) return;
+                    await removeInvestigationJournalEntry(campaignId, entryId, liveState);
+                  }}
+                  onNotify={setToast}
+                />
+              )}
             </SceneEffectsStage>
           </div>
         )}

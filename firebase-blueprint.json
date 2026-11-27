@@ -73,6 +73,7 @@
         "activeHandout": { "type": "object" },
         "interludeConfig": { "type": "object", "description": "Custom standby/interlude screen title, subtitle, icon, and background image." },
         "liveAudio": { "type": "object", "description": "Real-time synced music, ambience, SFX pulse, volumes, and DSP state controlled by the GM." },
+        "investigationJournal": { "type": "array", "description": "Session Investigation Journal entries noted by players or GM from point-and-click hotspots (max 80)." },
         "recentPublicRolls": { "type": "array" },
         "shakePulseMs": { "type": "number" },
         "updatedAt": { "type": "string", "format": "date-time" }

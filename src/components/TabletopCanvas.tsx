@@ -12,6 +12,7 @@ import {
   Maximize2,
   Moon,
   RotateCcw,
+  Search,
   Skull,
   SlidersHorizontal,
   Swords,
@@ -74,6 +75,7 @@ interface TabletopCanvasProps {
   onWallsChange?: (walls: SceneWall[]) => void;
   onShowTokenPopup?: (handout: ActiveHandoutProjection) => void;
   onRequestDuelPair?: (tokenA: SceneToken, tokenB: SceneToken) => void;
+  onOpenInvestigationToken?: (token: SceneToken) => void;
   onSaveToVault?: (token: SceneToken) => void;
   onToolChange?: (tool: CanvasTool) => void;
   onNotify?: (msg: string) => void;
@@ -206,6 +208,7 @@ export function TabletopCanvas({
   onWallsChange,
   onShowTokenPopup,
   onRequestDuelPair,
+  onOpenInvestigationToken,
   onSaveToVault,
   onToolChange,
   onNotify,
@@ -213,6 +216,7 @@ export function TabletopCanvas({
   const outerStageRef = useRef<HTMLDivElement | null>(null);
   const mapBoxRef = useRef<HTMLDivElement | null>(null);
   const fogCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const dragStartClientRef = useRef<{ tokenId: string; x: number; y: number } | null>(null);
 
   const [bgUrl, setBgUrl] = useState('');
   const [mediaError, setMediaError] = useState(false);
@@ -1101,7 +1105,7 @@ export function TabletopCanvas({
     }
   }
 
-  function handleStagePointerUp() {
+  function handleStagePointerUp(e?: React.PointerEvent) {
     if (isPanning) {
       setIsPanning(false);
       panStartRef.current = null;
@@ -1207,8 +1211,22 @@ export function TabletopCanvas({
     }
 
     if (draggingTokenId) {
+      const finishedTokenId = draggingTokenId;
+      const dragStart = dragStartClientRef.current;
+      dragStartClientRef.current = null;
       setDraggingTokenId(null);
-      onTokensChange?.(localTokens);
+
+      const movedPx =
+        e && dragStart && dragStart.tokenId === finishedTokenId
+          ? Math.hypot(e.clientX - dragStart.x, e.clientY - dragStart.y)
+          : 999;
+      const finishedToken = localTokens.find((t) => t.id === finishedTokenId);
+
+      if (movedPx < 6 && finishedToken?.isInvestigationTrigger) {
+        onOpenInvestigationToken?.(finishedToken);
+      } else {
+        onTokensChange?.(localTokens);
+      }
     }
   }
 
@@ -1219,7 +1237,12 @@ export function TabletopCanvas({
     // 1. Explicit Duel Tool ('duel' tool in top toolbar or active duelCandidateId)
     const isExplicitDuelTool = activeTool === 'duel' || Boolean(duelCandidateId);
 
-    if (isExplicitDuelTool && token.layerKind !== 'text' && token.layerKind !== 'brush') {
+    if (
+      isExplicitDuelTool &&
+      token.layerKind !== 'text' &&
+      token.layerKind !== 'brush' &&
+      !token.isInvestigationTrigger
+    ) {
       e.stopPropagation();
       setContextMenu(null);
       const firstId = duelCandidateId;
@@ -1287,7 +1310,13 @@ export function TabletopCanvas({
     // Single token selection & drag
     setSelectedTokenId(token.id);
     setSelectedTokenIds([token.id]);
-    if (token.locked) return;
+    if (token.locked) {
+      if (token.isInvestigationTrigger) {
+        onOpenInvestigationToken?.(token);
+      }
+      return;
+    }
+    dragStartClientRef.current = { tokenId: token.id, x: e.clientX, y: e.clientY };
     setDragOffset({ dx: nx - token.x, dy: ny - token.y });
     mapBoxRef.current?.setPointerCapture(e.pointerId);
     setDraggingTokenId(token.id);
@@ -1528,7 +1557,7 @@ export function TabletopCanvas({
   const selectedToken = localTokens.find((t) => t.id === selectedTokenId) || null;
   const selectedTokensList = localTokens.filter((t) => selectedTokenIds.includes(t.id));
   const selectedCombatantPair = selectedTokensList.filter(
-    (t) => t.layerKind !== 'text' && t.layerKind !== 'brush'
+    (t) => t.layerKind !== 'text' && t.layerKind !== 'brush' && !t.isInvestigationTrigger
   );
   const contextToken = contextMenu
     ? localTokens.find((t) => t.id === contextMenu.tokenId) || null
@@ -1990,24 +2019,30 @@ export function TabletopCanvas({
                     vitalStatus === 'unconscious'
                       ? 'translate(-50%, -50%) rotate(-12deg)'
                       : 'translate(-50%, -50%)',
-                  opacity: token.hiddenFromPlayers
-                    ? 0.52
-                    : typeof token.opacity === 'number'
-                      ? token.opacity
-                      : 1,
+                  opacity: token.isInvestigationTrigger
+                    ? 0.92
+                    : token.hiddenFromPlayers
+                      ? 0.52
+                      : typeof token.opacity === 'number'
+                        ? token.opacity
+                        : 1,
                 }}
                 className={`absolute transition-transform duration-200 ${behaviorClass} ${
                   isHit ? 'token-hit-active' : ''
                 } ${
                   mode === 'gm' && activeTool === 'move'
-                    ? token.locked
-                      ? 'pointer-events-auto cursor-default'
-                      : 'pointer-events-auto cursor-grab active:cursor-grabbing'
+                    ? token.isInvestigationTrigger
+                      ? 'pointer-events-auto cursor-pointer'
+                      : token.locked
+                        ? 'pointer-events-auto cursor-default'
+                        : 'pointer-events-auto cursor-grab active:cursor-grabbing'
                     : 'pointer-events-none'
                 } ${isSelected ? 'z-20' : 'z-10'}`}
                 title={
                   mode === 'gm'
-                    ? `${token.name} (arraste para mover · arraste caixa no mapa para selecionar vários · botão direito com 2 selecionados para Duelo 3D)`
+                    ? token.isInvestigationTrigger
+                      ? `${token.name} (Só Mestre · Clique para abrir a Cena de Investigação · Arraste para mover)`
+                      : `${token.name} (arraste para mover · arraste caixa no mapa para selecionar vários · botão direito com 2 selecionados para Duelo 3D)`
                     : token.name
                 }
               >
@@ -2094,7 +2129,24 @@ export function TabletopCanvas({
                       className="w-full h-full flex items-center justify-center"
                       style={{ filter: vitalFilterCss }}
                     >
-                      {imgSrc ? (
+                      {token.isInvestigationTrigger ? (
+                        <div className="w-full h-full flex flex-col items-center justify-center bg-[#0d111a]/95 text-amber-300 relative">
+                          <div
+                            className="absolute inset-0 pointer-events-none"
+                            style={{
+                              background:
+                                'radial-gradient(circle, rgba(245,158,11,0.28) 0%, rgba(13,17,26,0.95) 72%)',
+                            }}
+                          />
+                          <Search
+                            className="relative z-10 text-amber-300 drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)]"
+                            style={{
+                              width: `${Math.max(16, Math.min(32, dispW * 0.44))}px`,
+                              height: `${Math.max(16, Math.min(32, dispH * 0.44))}px`,
+                            }}
+                          />
+                        </div>
+                      ) : imgSrc ? (
                         <img
                           src={imgSrc}
                           alt={token.name}
@@ -2281,10 +2333,21 @@ export function TabletopCanvas({
                 }}
                 className="absolute z-10 flex flex-col items-center gap-0.5 pointer-events-none"
               >
-                <div className="px-1.5 py-0.5 text-[11px] leading-none bg-black/80 text-stone-100 whitespace-nowrap flex items-center gap-1">
+                <div
+                  className={`px-1.5 py-0.5 text-[11px] leading-none whitespace-nowrap flex items-center gap-1 ${
+                    token.isInvestigationTrigger
+                      ? 'bg-[#121620]/95 text-amber-200 border border-amber-400/45 shadow-md'
+                      : 'bg-black/80 text-stone-100'
+                  }`}
+                >
+                  {token.isInvestigationTrigger && <Search className="w-2.5 h-2.5 text-amber-400" />}
                   <span>
                     {token.name}
-                    {mode === 'gm' && token.hiddenFromPlayers ? ' (Oculto)' : ''}
+                    {token.isInvestigationTrigger
+                      ? ' · Só Mestre'
+                      : mode === 'gm' && token.hiddenFromPlayers
+                        ? ' (Oculto)'
+                        : ''}
                   </span>
                 </div>
                 {vitalStatus !== 'alive' && (
@@ -2717,60 +2780,72 @@ export function TabletopCanvas({
             <span className="text-xs vtt-muted" aria-hidden="true">
               ·
             </span>
-            {selectedToken.layerKind !== 'text' && (
-              <>
-                {/* 1-Click Vital Condition Pills directly on the floating bar */}
-                <div className="flex items-center border vtt-border vtt-canvas">
-                  {(
-                    [
-                      { id: 'alive' as const, label: 'Vivo', icon: Heart, color: 'text-emerald-500' },
-                      {
-                        id: 'unconscious' as const,
-                        label: 'Inconsc.',
-                        icon: Moon,
-                        color: 'text-indigo-400',
-                      },
-                      {
-                        id: 'dying' as const,
-                        label: 'Morrendo',
-                        icon: HeartPulse,
-                        color: 'text-amber-400',
-                      },
-                      { id: 'dead' as const, label: 'Morto', icon: Skull, color: 'text-red-500' },
-                    ]
-                  ).map((st) => {
-                    const Icon = st.icon;
-                    const active = (selectedToken.vitalStatus || 'alive') === st.id;
-                    return (
-                      <button
-                        key={st.id}
-                        type="button"
-                        onClick={() =>
-                          updateSingleToken({ ...selectedToken, vitalStatus: st.id })
-                        }
-                        className={`px-2 py-1 text-[11px] flex items-center gap-1 transition-colors ${
-                          active
-                            ? 'vtt-accent-btn font-bold'
-                            : 'vtt-muted hover:opacity-100'
-                        }`}
-                        title={`Estado vital: ${st.label}`}
-                      >
-                        <Icon className={`w-3 h-3 ${active ? '' : st.color}`} />
-                        <span className="hidden sm:inline">{st.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => triggerTokenHit(selectedToken.id)}
-                  className="px-2 py-1.5 text-xs font-semibold bg-red-700 hover:bg-red-800 text-white flex items-center gap-1 whitespace-nowrap shrink-0"
-                  title="Efeito de dano / hit no token"
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  Hit
-                </button>
-              </>
+            {selectedToken.isInvestigationTrigger ? (
+              <button
+                type="button"
+                onClick={() => onOpenInvestigationToken?.(selectedToken)}
+                className="px-3 py-1.5 text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-stone-950 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                title="Abrir a aba de Cena de Investigação vinculada a este marcador"
+              >
+                <Search className="w-3.5 h-3.5" />
+                Abrir Cena de Investigação
+              </button>
+            ) : (
+              selectedToken.layerKind !== 'text' && (
+                <>
+                  {/* 1-Click Vital Condition Pills directly on the floating bar */}
+                  <div className="flex items-center border vtt-border vtt-canvas">
+                    {(
+                      [
+                        { id: 'alive' as const, label: 'Vivo', icon: Heart, color: 'text-emerald-500' },
+                        {
+                          id: 'unconscious' as const,
+                          label: 'Inconsc.',
+                          icon: Moon,
+                          color: 'text-indigo-400',
+                        },
+                        {
+                          id: 'dying' as const,
+                          label: 'Morrendo',
+                          icon: HeartPulse,
+                          color: 'text-amber-400',
+                        },
+                        { id: 'dead' as const, label: 'Morto', icon: Skull, color: 'text-red-500' },
+                      ]
+                    ).map((st) => {
+                      const Icon = st.icon;
+                      const active = (selectedToken.vitalStatus || 'alive') === st.id;
+                      return (
+                        <button
+                          key={st.id}
+                          type="button"
+                          onClick={() =>
+                            updateSingleToken({ ...selectedToken, vitalStatus: st.id })
+                          }
+                          className={`px-2 py-1 text-[11px] flex items-center gap-1 transition-colors ${
+                            active
+                              ? 'vtt-accent-btn font-bold'
+                              : 'vtt-muted hover:opacity-100'
+                          }`}
+                          title={`Estado vital: ${st.label}`}
+                        >
+                          <Icon className={`w-3 h-3 ${active ? '' : st.color}`} />
+                          <span className="hidden sm:inline">{st.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => triggerTokenHit(selectedToken.id)}
+                    className="px-2 py-1.5 text-xs font-semibold bg-red-700 hover:bg-red-800 text-white flex items-center gap-1 whitespace-nowrap shrink-0"
+                    title="Efeito de dano / hit no token"
+                  >
+                    <Zap className="w-3.5 h-3.5" />
+                    Hit
+                  </button>
+                </>
+              )
             )}
             <button
               type="button"

@@ -117,6 +117,8 @@ export interface SceneToken {
   combatSpriteMediaId?: string;
   notes?: string;
   hiddenFromPlayers?: boolean;
+  isInvestigationTrigger?: boolean;
+  investigationId?: string;
   sheetId?: string;
   outlineStyle?: TokenOutlineStyle;
   outlineColor?: string;
@@ -525,6 +527,49 @@ export interface InterludeConfig {
   mediaId: string;
 }
 
+export type InvestigationDifficulty = 1 | 2 | 3;
+
+export interface InvestigationHotspot {
+  id: string;
+  x: number; // normalized 0..1 inside the background image box
+  y: number; // normalized 0..1 inside the background image box
+  title: string;
+  description: string;
+  zoomImageUrl?: string;
+  zoomMediaId?: string;
+  difficulty: InvestigationDifficulty;
+  visibleToPlayers: boolean;
+}
+
+export interface InvestigationSceneData {
+  id: string;
+  sceneId: string;
+  tokenId: string;
+  title: string;
+  bgImageUrl: string;
+  bgMediaId: string;
+  hotspots: InvestigationHotspot[];
+  flashlightRadiusPx?: number; // default 210
+  ambientDarkness?: number; // 0.55 .. 0.96, default 0.88
+  isLiveToPlayers: boolean;
+  updatedAtMs: number;
+}
+
+export interface InvestigationJournalEntry {
+  id: string;
+  investigationId: string;
+  investigationTitle: string;
+  hotspotId: string;
+  title: string;
+  description: string;
+  zoomImageUrl?: string;
+  zoomMediaId?: string;
+  difficulty: InvestigationDifficulty;
+  notedByUid: string;
+  notedByName: string;
+  notedAtMs: number;
+}
+
 export interface LiveSceneSnapshot {
   id: string;
   name: string;
@@ -540,6 +585,7 @@ export interface LiveSceneSnapshot {
   tokens: SceneToken[];
   activeDuel?: ActiveDuelState | null;
   duelConfig?: SceneDuelConfig;
+  activeInvestigation?: InvestigationSceneData | null;
   playerViewMode?: PlayerViewSectionMode;
 }
 
@@ -588,6 +634,7 @@ export interface LiveTableState {
   activeHandout: ActiveHandoutProjection | null;
   interludeConfig?: InterludeConfig | null;
   liveAudio?: LiveAudioState | null;
+  investigationJournal?: InvestigationJournalEntry[];
   recentPublicRolls: PublicRollSummary[];
   shakePulseMs?: number;
   updatedAt?: Timestamp | number;

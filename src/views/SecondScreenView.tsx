@@ -13,13 +13,19 @@ import {
 import type { InterludeIconId, LivePublicWiki, LiveTableState } from '../types/vtt';
 import { applyCampaignTheme, getSceneEffects } from '../lib/themes';
 import { resolveMediaUrl } from '../lib/mediaStore';
-import { openTableChannel, subscribeLiveState, subscribeLiveWiki } from '../lib/vttService';
+import {
+  openTableChannel,
+  saveInvestigationJournalEntry,
+  subscribeLiveState,
+  subscribeLiveWiki,
+} from '../lib/vttService';
 import { useSyncedLiveAudio } from '../hooks/useSyncedLiveAudio';
 import { TabletopCanvas } from '../components/TabletopCanvas';
 import { SceneEffectsStage } from '../components/SceneEffectsOverlay';
 import { HandoutOverlay } from '../components/HandoutOverlay';
 import { DiceRollOverlay, type ActiveDiceAnimation } from '../components/DiceRollOverlay';
 import { DuelArena3DOverlay } from '../components/DuelArena3DOverlay';
+import { InvestigationSceneOverlay } from '../components/InvestigationSceneOverlay';
 
 function renderInterludeIcon(icon: InterludeIconId | undefined) {
   switch (icon) {
@@ -141,6 +147,14 @@ export function SecondScreenView({ campaignId }: SecondScreenViewProps) {
     rawDuel && liveState.activeScene && rawDuel.sceneId === liveState.activeScene.id
       ? rawDuel
       : null;
+  const rawInv = liveState.activeScene?.activeInvestigation || null;
+  const activeInvestigation =
+    rawInv &&
+    rawInv.isLiveToPlayers &&
+    liveState.activeScene &&
+    rawInv.sceneId === liveState.activeScene.id
+      ? rawInv
+      : null;
 
   return (
     <div className="h-screen w-screen overflow-hidden relative bg-stone-950">
@@ -157,8 +171,8 @@ export function SecondScreenView({ campaignId }: SecondScreenViewProps) {
           activeDuel={activeDuel}
         />
 
-        {/* GM-Controlled Forced Section Overlay on Visualization Screen (when no duel is active) */}
-        {!activeDuel && playerViewMode === 'clues' && (
+        {/* GM-Controlled Forced Section Overlay on Visualization Screen (when no duel or investigation is active) */}
+        {!activeDuel && !activeInvestigation && playerViewMode === 'clues' && (
           <div className="absolute inset-0 z-30 vtt-canvas/95 backdrop-blur-md p-8 sm:p-12 overflow-y-auto flex flex-col">
             <div className="max-w-5xl w-full mx-auto space-y-6">
               <div className="flex items-center justify-between border-b vtt-border pb-4">
@@ -209,7 +223,7 @@ export function SecondScreenView({ campaignId }: SecondScreenViewProps) {
           </div>
         )}
 
-        {!activeDuel && playerViewMode === 'dice' && (
+        {!activeDuel && !activeInvestigation && playerViewMode === 'dice' && (
           <div className="absolute inset-0 z-30 vtt-canvas/95 backdrop-blur-md p-8 sm:p-12 overflow-y-auto flex flex-col">
             <div className="max-w-4xl w-full mx-auto space-y-6">
               <div className="flex items-center justify-between border-b vtt-border pb-4">
@@ -259,7 +273,7 @@ export function SecondScreenView({ campaignId }: SecondScreenViewProps) {
           </div>
         )}
 
-        {!activeDuel && playerViewMode === 'standby' && (
+        {!activeDuel && !activeInvestigation && playerViewMode === 'standby' && (
           <div className="absolute inset-0 z-30 vtt-canvas flex flex-col items-center justify-center p-8 text-center overflow-hidden">
             {interludeBgUrl && (
               <>
@@ -291,6 +305,37 @@ export function SecondScreenView({ campaignId }: SecondScreenViewProps) {
           duel={activeDuel}
           mode="screen"
         />
+
+        {/* Point & Click Investigation Scene Stage */}
+        {activeInvestigation && !activeDuel && (
+          <InvestigationSceneOverlay
+            campaignId={campaignId}
+            mode="screen"
+            investigation={activeInvestigation}
+            journalEntries={liveState.investigationJournal || []}
+            currentUserName="Tela da Mesa"
+            onNoteClue={async (hotspot) => {
+              await saveInvestigationJournalEntry(
+                campaignId,
+                {
+                  id: `jrn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                  investigationId: activeInvestigation.id,
+                  investigationTitle: activeInvestigation.title || 'Investigação',
+                  hotspotId: hotspot.id,
+                  title: hotspot.title || 'Pista',
+                  description: hotspot.description || '',
+                  zoomImageUrl: hotspot.zoomImageUrl || '',
+                  zoomMediaId: hotspot.zoomMediaId || '',
+                  difficulty: hotspot.difficulty || 1,
+                  notedByUid: 'screen',
+                  notedByName: 'Mesa (TV)',
+                  notedAtMs: Date.now(),
+                },
+                liveState
+              );
+            }}
+          />
+        )}
       </SceneEffectsStage>
 
       {/* Fullscreen Handout Pop-up controlled by GM */}

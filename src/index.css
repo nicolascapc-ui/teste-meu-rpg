@@ -747,6 +747,88 @@
   animation: jrpgMoteRise 3.8s ease-out infinite;
 }
 
+/* ============================================================================
+   INVESTIGATION SCENE (POINT & CLICK) ATMOSPHERIC ANIMATIONS
+   ============================================================================ */
+
+@keyframes invMoteFloatA {
+  0%, 100% {
+    transform: translate3d(-4px, 3px, 0) scale(0.85);
+    opacity: 0.28;
+  }
+  50% {
+    transform: translate3d(5px, -8px, 0) scale(1.15);
+    opacity: 0.72;
+  }
+}
+
+@keyframes invMoteFloatB {
+  0%, 100% {
+    transform: translate3d(5px, -2px, 0) scale(0.75);
+    opacity: 0.22;
+  }
+  50% {
+    transform: translate3d(-6px, -11px, 0) scale(1.05);
+    opacity: 0.62;
+  }
+}
+
+@keyframes invGlintBreathe {
+  0%, 100% {
+    transform: scale(0.92);
+    opacity: 0.42;
+  }
+  50% {
+    transform: scale(1.16);
+    opacity: 0.85;
+  }
+}
+
+@keyframes invModalReveal {
+  0% {
+    transform: translate3d(0, 14px, 0) scale(0.97);
+    opacity: 0;
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes invPanelSlideIn {
+  0% {
+    transform: translate3d(24px, 0, 0);
+    opacity: 0;
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+    opacity: 1;
+  }
+}
+
+.inv-mote-a {
+  will-change: transform, opacity;
+  animation: invMoteFloatA 4.4s ease-in-out infinite;
+}
+
+.inv-mote-b {
+  will-change: transform, opacity;
+  animation: invMoteFloatB 5.6s ease-in-out -1.8s infinite;
+}
+
+.inv-glint-breathe {
+  will-change: transform, opacity;
+  animation: invGlintBreathe 3.2s ease-in-out infinite;
+}
+
+.inv-modal-reveal {
+  animation: invModalReveal 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.inv-panel-slide {
+  animation: invPanelSlideIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 /* Minimalist subtle scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
@@ -772,7 +854,10 @@
   .duel-sprite-idle-npc,
   .jrpg-hero-float,
   .jrpg-halo-spin,
-  .jrpg-mote-rise {
+  .jrpg-mote-rise,
+  .inv-mote-a,
+  .inv-mote-b,
+  .inv-glint-breathe {
     animation: none;
   }
   .jrpg-portrait-slam,
@@ -783,10 +868,12 @@
   .jrpg-bio-fade-up,
   .jrpg-kicker-in,
   .jrpg-rule-expand,
-  .jrpg-flash-sweep {
+  .jrpg-flash-sweep,
+  .inv-modal-reveal,
+  .inv-panel-slide {
     animation-duration: 0.01ms;
   }
-  body :not(.fx-shake-active):not(.fx-crt-scanlines):not(.fx-noise-layer):not(.fx-glitch-layer):not(.fx-glitch-bar):not(.fx-blood-vignette):not(.token-behavior-float):not(.token-behavior-pulse):not(.token-behavior-tremble):not(.token-hit-active):not(.token-spin-aura):not(.duel-combo-pop):not(.duel-flame-flicker):not(.duel-flame-overdrive):not(.duel-ember-rise):not(.duel-injured-pulse) {
+  body :not(.fx-shake-active):not(.fx-crt-scanlines):not(.fx-noise-layer):not(.fx-glitch-layer):not(.fx-glitch-bar):not(.fx-blood-vignette):not(.token-behavior-float):not(.token-behavior-pulse):not(.token-behavior-tremble):not(.token-hit-active):not(.token-spin-aura):not(.duel-combo-pop):not(.duel-flame-flicker):not(.duel-flame-overdrive):not(.duel-ember-rise):not(.duel-injured-pulse):not(.inv-mote-a):not(.inv-mote-b):not(.inv-glint-breathe) {
     transition-duration: 0.01ms;
   }
 }

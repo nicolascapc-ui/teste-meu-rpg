@@ -37,6 +37,7 @@ import {
   Radio,
   Redo2,
   Ruler,
+  Search,
   SlidersHorizontal,
   Sparkles,
   Swords,
@@ -63,6 +64,8 @@ import type {
   Handout,
   InterludeConfig,
   InterludeIconId,
+  InvestigationHotspot,
+  InvestigationSceneData,
   LiveTableState,
   PlayerViewSectionMode,
   Scene,
@@ -83,6 +86,13 @@ import {
   saveCampaignDuelsByScene,
   saveSceneDuelConfig,
 } from '../lib/duelEngine';
+import {
+  createDefaultInvestigation,
+  createInvestigationId,
+  createInvestigationTriggerToken,
+  loadCampaignInvestigations,
+  saveCampaignInvestigations,
+} from '../lib/investigationEngine';
 import {
   loadVaultAssets,
   removeAssetFromVault,
@@ -105,6 +115,8 @@ import {
   deleteScene,
   projectHandoutToAll,
   recordDiceRoll,
+  removeInvestigationJournalEntry,
+  saveInvestigationJournalEntry,
   sendHandoutToPlayer,
   subscribeCampaignDoc,
   subscribeCampaignMembers,
@@ -118,6 +130,7 @@ import {
   syncInterludeConfig,
   syncLiveAudioState,
   syncLiveDuelState,
+  syncLiveInvestigationState,
   syncPlayerViewMode,
   toLiveSceneSnapshot,
   triggerShakePulse,
@@ -138,6 +151,7 @@ import { SceneEffectsStage } from '../components/SceneEffectsOverlay';
 import { DiceRollOverlay, type ActiveDiceAnimation } from '../components/DiceRollOverlay';
 import { HandoutOverlay } from '../components/HandoutOverlay';
 import { DuelArena3DOverlay, DuelSetupModal } from '../components/DuelArena3DOverlay';
+import { InvestigationSceneOverlay } from '../components/InvestigationSceneOverlay';
 import { ScenesHandoutsPanel } from '../components/ScenesHandoutsPanel';
 import { CharacterSheetPanel } from '../components/CharacterSheetPanel';
 import { DiceChatPanel } from '../components/DiceChatPanel';
@@ -249,6 +263,13 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   const preDuelMusicIdRef = useRef<string | null>(null);
   const preDuelAmbienceIdRef = useRef<string | null>(null);
 
+  // Isolated Point & Click Investigation Scenes (keyed by investigationId, triggered by GM-only tokens)
+  const [investigationsById, setInvestigationsById] = useState<
+    Record<string, InvestigationSceneData>
+  >(() => loadCampaignInvestigations(campaignId));
+  const investigationsByIdRef = useRef<Record<string, InvestigationSceneData>>(investigationsById);
+  const [openInvestigationId, setOpenInvestigationId] = useState<string | null>(null);
+
   // Undo / Redo History Stacks (Ctrl+Z / Ctrl+Y)
   const [undoStack, setUndoStack] = useState<SceneHistorySnapshot[]>([]);
   const [redoStack, setRedoStack] = useState<SceneHistorySnapshot[]>([]);
@@ -282,10 +303,18 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   }, [duelsByScene]);
 
   useEffect(() => {
+    investigationsByIdRef.current = investigationsById;
+  }, [investigationsById]);
+
+  useEffect(() => {
     setVaultAssets(loadVaultAssets(campaignId));
     const loadedDuels = loadCampaignDuelsByScene(campaignId);
     duelsBySceneRef.current = loadedDuels;
     setDuelsByScene(loadedDuels);
+    const loadedInvestigations = loadCampaignInvestigations(campaignId);
+    investigationsByIdRef.current = loadedInvestigations;
+    setInvestigationsById(loadedInvestigations);
+    setOpenInvestigationId(null);
   }, [campaignId]);
 
   // Hydrate an active duel from liveState if GM reopened on another browser/device without local cache
@@ -302,6 +331,20 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     });
   }, [campaignId, liveState?.activeScene?.id, liveState?.activeScene?.activeDuel?.id]);
 
+  // Hydrate a live investigation from liveState if GM reopened on another browser/device
+  useEffect(() => {
+    const liveScene = liveState?.activeScene;
+    const liveInv = liveScene?.activeInvestigation;
+    if (!liveScene || !liveInv || liveInv.sceneId !== liveScene.id) return;
+    setInvestigationsById((prev) => {
+      if (prev[liveInv.id]) return prev;
+      const next = { ...prev, [liveInv.id]: liveInv };
+      investigationsByIdRef.current = next;
+      saveCampaignInvestigations(campaignId, next);
+      return next;
+    });
+  }, [campaignId, liveState?.activeScene?.id, liveState?.activeScene?.activeInvestigation?.id]);
+
   function updateDuelsByScene(
     updater: (prev: Record<string, ActiveDuelState>) => Record<string, ActiveDuelState>
   ) {
@@ -309,6 +352,19 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       const next = updater(prev);
       duelsBySceneRef.current = next;
       saveCampaignDuelsByScene(campaignId, next);
+      return next;
+    });
+  }
+
+  function updateInvestigationsById(
+    updater: (
+      prev: Record<string, InvestigationSceneData>
+    ) => Record<string, InvestigationSceneData>
+  ) {
+    setInvestigationsById((prev) => {
+      const next = updater(prev);
+      investigationsByIdRef.current = next;
+      saveCampaignInvestigations(campaignId, next);
       return next;
     });
   }
@@ -645,14 +701,41 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
     [otherActiveDuel, scenes]
   );
 
+  const visibleGmInvestigation = useMemo(() => {
+    if (!openInvestigationId || !activeScene) return null;
+    const found = investigationsById[openInvestigationId];
+    return found && found.sceneId === activeScene.id ? found : null;
+  }, [openInvestigationId, activeScene, investigationsById]);
+
+  const activeSceneInvestigationTokens = useMemo(
+    () => (activeScene?.tokens || []).filter((t) => Boolean(t.isInvestigationTrigger)),
+    [activeScene?.tokens]
+  );
+
   const activeSceneForCanvas = useMemo(() => {
     if (!activeScene) return null;
     const currentViewMode = liveState?.activeScene?.playerViewMode || 'scene';
+    const liveInvForScene =
+      Object.values(investigationsById).find(
+        (inv) => inv.sceneId === activeScene.id && inv.isLiveToPlayers
+      ) || null;
     return {
-      ...toLiveSceneSnapshot(activeScene, visibleGmDuel, sceneDuelConfig, currentViewMode),
+      ...toLiveSceneSnapshot(
+        activeScene,
+        visibleGmDuel,
+        sceneDuelConfig,
+        currentViewMode,
+        liveInvForScene
+      ),
       tokens: activeScene.tokens,
     };
-  }, [activeScene, visibleGmDuel, sceneDuelConfig, liveState?.activeScene?.playerViewMode]);
+  }, [
+    activeScene,
+    visibleGmDuel,
+    sceneDuelConfig,
+    investigationsById,
+    liveState?.activeScene?.playerViewMode,
+  ]);
 
   const uploadContext = useMemo(
     () => ({
@@ -851,6 +934,10 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
 
     const savedDuelForScene = duelsBySceneRef.current[scene.id] || null;
     const duelConfigForScene = loadSceneDuelConfig(campaign.id, scene);
+    const savedLiveInvForScene =
+      Object.values(investigationsByIdRef.current).find(
+        (inv) => inv.sceneId === scene.id && inv.isLiveToPlayers
+      ) || null;
 
     // By default (liveSceneSwitch OFF), clicking another scene switches ONLY the GM's canvas
     // while the players' live scene keeps running smoothly without freezing!
@@ -872,7 +959,8 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       scene,
       liveStateRef.current,
       savedDuelForScene,
-      duelConfigForScene
+      duelConfigForScene,
+      savedLiveInvForScene
     );
 
     let audioTriggered = false;
@@ -916,6 +1004,155 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       return;
     }
     void handleSelectScene(targetScene);
+  }
+
+  function handleOpenInvestigationToken(token: SceneToken) {
+    if (!activeScene) return;
+    const invId = token.investigationId || `inv_${token.id}`;
+    const existing = investigationsByIdRef.current[invId];
+    if (!existing) {
+      const created = createDefaultInvestigation({
+        id: invId,
+        sceneId: activeScene.id,
+        tokenId: token.id,
+        title: token.name && token.name !== 'Investigação' ? token.name : `Investigação · ${activeScene.name}`,
+      });
+      updateInvestigationsById((prev) => ({ ...prev, [invId]: created }));
+    }
+    setOpenInvestigationId(invId);
+  }
+
+  async function handleToolbarInvestigationClick(forceNewToken = false) {
+    if (!campaign || !activeScene) return;
+    // If overlay is currently open and not forcing a new token, toggle back to tactical map
+    if (visibleGmInvestigation && !forceNewToken) {
+      setOpenInvestigationId(null);
+      return;
+    }
+
+    const existingTokens = (activeScene.tokens || []).filter((t) => Boolean(t.isInvestigationTrigger));
+    if (existingTokens.length > 0 && !forceNewToken) {
+      handleOpenInvestigationToken(existingTokens[0]);
+      return;
+    }
+
+    // Place a new GM-only investigation trigger token on the current scene
+    const invId = createInvestigationId();
+    const indexSuffix = existingTokens.length > 0 ? ` #${existingTokens.length + 1}` : '';
+    const offset = Math.min(0.18, existingTokens.length * 0.05);
+    const triggerToken = createInvestigationTriggerToken({
+      investigationId: invId,
+      name: `Investigação${indexSuffix}`,
+      x: Number((0.5 + offset).toFixed(3)),
+      y: Number((0.5 + offset).toFixed(3)),
+    });
+    const createdInv = createDefaultInvestigation({
+      id: invId,
+      sceneId: activeScene.id,
+      tokenId: triggerToken.id,
+      title: `Investigação · ${activeScene.name}${indexSuffix}`,
+    });
+    updateInvestigationsById((prev) => ({ ...prev, [invId]: createdInv }));
+    await handleTokensChange([...(activeScene.tokens || []), triggerToken]);
+    notify(
+      'Token de Investigação (Só Mestre) colocado no mapa! Posicione-o e clique nele para abrir o editor.'
+    );
+  }
+
+  function handleUpdateInvestigation(updated: InvestigationSceneData) {
+    if (!campaign) return;
+    updateInvestigationsById((prev) => ({ ...prev, [updated.id]: updated }));
+    // Sync live in real-time whenever this investigation is currently projected to players
+    if (updated.isLiveToPlayers && campaign.activeSceneId === updated.sceneId) {
+      const targetScene = scenes.find((s) => s.id === updated.sceneId) || activeScene;
+      if (targetScene) {
+        void syncLiveInvestigationState(campaign.id, targetScene, updated, liveStateRef.current);
+      }
+    }
+  }
+
+  async function handleToggleInvestigationLive(
+    inv: InvestigationSceneData,
+    nextLive: boolean
+  ) {
+    if (!campaign) return;
+    const targetScene = scenes.find((s) => s.id === inv.sceneId) || activeScene;
+    if (!targetScene) return;
+
+    const updated: InvestigationSceneData = {
+      ...inv,
+      isLiveToPlayers: nextLive,
+      updatedAtMs: Date.now(),
+    };
+
+    // Ensure at most one investigation per scene is marked live
+    updateInvestigationsById((prev) => {
+      const nextMap: Record<string, InvestigationSceneData> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        if (v.sceneId === inv.sceneId && k !== inv.id && nextLive) {
+          nextMap[k] = { ...v, isLiveToPlayers: false };
+        } else {
+          nextMap[k] = v;
+        }
+      }
+      nextMap[updated.id] = updated;
+      return nextMap;
+    });
+
+    if (nextLive && campaign.activeSceneId !== targetScene.id) {
+      await activateScene(
+        campaign.id,
+        targetScene,
+        liveStateRef.current,
+        null,
+        undefined,
+        updated
+      );
+      notify(`Cena de Investigação "${updated.title}" projetada nos Players e TV!`);
+    } else {
+      await syncLiveInvestigationState(
+        campaign.id,
+        targetScene,
+        nextLive ? updated : null,
+        liveStateRef.current
+      );
+      notify(
+        nextLive
+          ? `Cena de Investigação "${updated.title}" agora visível para os Players e TV!`
+          : 'Cena de Investigação ocultada dos Players (eles voltaram ao mapa da cena).'
+      );
+    }
+  }
+
+  async function handleNoteInvestigationClue(
+    inv: InvestigationSceneData,
+    hotspot: InvestigationHotspot
+  ) {
+    if (!campaign) return;
+    await saveInvestigationJournalEntry(
+      campaign.id,
+      {
+        id: `jrn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        investigationId: inv.id,
+        investigationTitle: inv.title || 'Investigação',
+        hotspotId: hotspot.id,
+        title: hotspot.title || 'Pista',
+        description: hotspot.description || '',
+        zoomImageUrl: hotspot.zoomImageUrl || '',
+        zoomMediaId: hotspot.zoomMediaId || '',
+        difficulty: hotspot.difficulty || 1,
+        notedByUid: user.uid,
+        notedByName: user.displayName || 'Mestre',
+        notedAtMs: Date.now(),
+      },
+      liveStateRef.current
+    );
+    notify(`"${hotspot.title || 'Pista'}" registrada no Diário da Investigação.`);
+  }
+
+  async function handleRemoveInvestigationJournal(entryId: string) {
+    if (!campaign) return;
+    await removeInvestigationJournalEntry(campaign.id, entryId, liveStateRef.current);
   }
 
   async function handleUpdateInterludeConfig(patch: Partial<InterludeConfig>) {
@@ -1979,7 +2216,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                   return;
                 }
                 const characterTokens = (activeScene?.tokens || []).filter(
-                  (t) => !t.layerKind || t.layerKind === 'token'
+                  (t) => (!t.layerKind || t.layerKind === 'token') && !t.isInvestigationTrigger
                 );
                 if (characterTokens.length === 2) {
                   setDuelSetupPair({
@@ -1999,6 +2236,38 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
             >
               <Swords className="w-3.5 h-3.5 text-amber-400" />
               Duelo 3D
+            </button>
+
+            <button
+              type="button"
+              onClick={(e) => void handleToolbarInvestigationClick(e.shiftKey)}
+              className={`px-2.5 py-1.5 text-xs border flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                visibleGmInvestigation
+                  ? 'bg-amber-600 text-stone-950 border-amber-400 font-semibold'
+                  : activeSceneInvestigationTokens.length > 0
+                    ? 'vtt-canvas border-amber-500/55 text-amber-200 hover:border-amber-400'
+                    : 'vtt-canvas vtt-border hover:border-amber-500/60'
+              }`}
+              title={
+                visibleGmInvestigation
+                  ? 'Voltar ao Mapa Tático (Shift+Clique para adicionar outro marcador de investigação)'
+                  : activeSceneInvestigationTokens.length > 0
+                    ? 'Abrir Cena de Investigação desta cena (Shift+Clique para colocar mais um token de investigação)'
+                    : 'Colocar Token de Investigação (Só Mestre) nesta cena — clique no token para abrir o modo Point & Click'
+              }
+            >
+              <Search
+                className={`w-3.5 h-3.5 ${
+                  visibleGmInvestigation ? 'text-stone-950' : 'text-amber-400'
+                }`}
+              />
+              <span>
+                {visibleGmInvestigation
+                  ? 'Mapa Tático'
+                  : activeSceneInvestigationTokens.length > 0
+                    ? 'Investigação'
+                    : '+ Investigação'}
+              </span>
             </button>
           </div>
         </div>
@@ -2745,6 +3014,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 onShowTokenPopup={(h) => void handleProjectHandout(h)}
                 onSaveToVault={handleSaveTokenToVault}
                 onRequestDuelPair={(a, b) => setDuelSetupPair({ tokenA: a, tokenB: b })}
+                onOpenInvestigationToken={handleOpenInvestigationToken}
                 onToolChange={setActiveTool}
                 onNotify={notify}
               />
@@ -2768,6 +3038,31 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 }
                 onNotify={notify}
               />
+
+              {/* Isolated Point & Click Investigation Scene Overlay (bound to GM-only trigger token) */}
+              {visibleGmInvestigation && !visibleGmDuel && (
+                <InvestigationSceneOverlay
+                  campaignId={campaign.id}
+                  gmUid={campaign.gmUid}
+                  currentUserUid={user.uid}
+                  currentUserName={user.displayName || 'Mestre'}
+                  mode="gm"
+                  investigation={visibleGmInvestigation}
+                  journalEntries={liveState?.investigationJournal || []}
+                  onChangeInvestigation={handleUpdateInvestigation}
+                  onToggleLiveToPlayers={(nextLive) =>
+                    void handleToggleInvestigationLive(visibleGmInvestigation, nextLive)
+                  }
+                  onCloseOverlay={() => setOpenInvestigationId(null)}
+                  onNoteClue={(hotspot) =>
+                    void handleNoteInvestigationClue(visibleGmInvestigation, hotspot)
+                  }
+                  onRemoveJournalEntry={(entryId) =>
+                    void handleRemoveInvestigationJournal(entryId)
+                  }
+                  onNotify={notify}
+                />
+              )}
             </SceneEffectsStage>
 
             {/* Toast Notification */}
