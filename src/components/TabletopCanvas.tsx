@@ -230,6 +230,7 @@ export function TabletopCanvas({
   const [groupDragState, setGroupDragState] = useState<GroupDragState | null>(null);
   const [duelCandidateId, setDuelCandidateId] = useState<string | null>(null);
   const [draggingTokenId, setDraggingTokenId] = useState<string | null>(null);
+  const [aimingVisionTokenId, setAimingVisionTokenId] = useState<string | null>(null);
   const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
   const [resizingState, setResizingState] = useState<ResizeInteractionState | null>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
@@ -311,10 +312,10 @@ export function TabletopCanvas({
   const mapScale = 1;
 
   useEffect(() => {
-    if (!draggingTokenId && !groupDragState && !resizingState) {
+    if (!draggingTokenId && !groupDragState && !resizingState && !aimingVisionTokenId) {
       setLocalTokens(scene?.tokens || []);
     }
-  }, [scene?.tokens, draggingTokenId, groupDragState, resizingState]);
+  }, [scene?.tokens, draggingTokenId, groupDragState, resizingState, aimingVisionTokenId]);
 
   useEffect(() => {
     if (!isPaintingFogRef.current) {
@@ -597,7 +598,14 @@ export function TabletopCanvas({
         const ox = tok.x * w;
         const oy = tok.y * h;
         const radiusPx = Math.max(48, (tok.visionRadius || 0.34) * baseSpan);
-        const poly = computeVisibilityPolygon(ox, oy, radiusPx, localWalls, w, h);
+        const isCone = tok.visionMode === 'cone';
+        const coneConfig = isCone
+          ? {
+              facingDeg: tok.visionFacing ?? 0,
+              spreadDeg: tok.visionAngle ?? 90,
+            }
+          : undefined;
+        const poly = computeVisibilityPolygon(ox, oy, radiusPx, localWalls, w, h, coneConfig);
         if (poly.length < 3) continue;
 
         ctx.save();
@@ -614,6 +622,18 @@ export function TabletopCanvas({
         grad.addColorStop(1, 'rgba(0,0,0,0.05)');
         ctx.fillStyle = grad;
         ctx.fill();
+
+        // Keep the token's own immediate body visible at the base of a directional cone
+        if (isCone) {
+          const selfPx = Math.max(24, ((tok.widthPx || tok.sizePx || 52) / 1200) * w * 0.68);
+          const selfGrad = ctx.createRadialGradient(ox, oy, selfPx * 0.45, ox, oy, selfPx);
+          selfGrad.addColorStop(0, 'rgba(0,0,0,1)');
+          selfGrad.addColorStop(1, 'rgba(0,0,0,0)');
+          ctx.beginPath();
+          ctx.arc(ox, oy, selfPx, 0, Math.PI * 2);
+          ctx.fillStyle = selfGrad;
+          ctx.fill();
+        }
         ctx.restore();
       }
     }
@@ -1049,6 +1069,24 @@ export function TabletopCanvas({
       return;
     }
 
+    // Active Vision Cone Aiming Handle Dragging (live 60fps rotation on GM + TV!)
+    if (aimingVisionTokenId && mode === 'gm') {
+      const target = localTokens.find((t) => t.id === aimingVisionTokenId);
+      if (target) {
+        const dxPx = (nx - target.x) * mapBoxSize.width;
+        const dyPx = (ny - target.y) * mapBoxSize.height;
+        if (Math.hypot(dxPx, dyPx) > 4) {
+          const deg = Math.round(((Math.atan2(dyPx, dxPx) * 180) / Math.PI + 90 + 360) % 360);
+          const nextTokens = localTokens.map((t) =>
+            t.id === aimingVisionTokenId ? { ...t, visionFacing: deg } : t
+          );
+          setLocalTokens(nextTokens);
+          onTokensLiveChange?.(nextTokens);
+        }
+      }
+      return;
+    }
+
     // Active Single Token / Layer Dragging (broadcasts in real-time to Shared TV!)
     if (draggingTokenId && mode === 'gm') {
       const clampedX = Math.max(0.01, Math.min(0.99, nx - dragOffset.dx));
@@ -1160,6 +1198,11 @@ export function TabletopCanvas({
 
     if (groupDragState) {
       setGroupDragState(null);
+      onTokensChange?.(localTokens);
+    }
+
+    if (aimingVisionTokenId) {
+      setAimingVisionTokenId(null);
       onTokensChange?.(localTokens);
     }
 
@@ -2171,6 +2214,35 @@ export function TabletopCanvas({
                         title="Arraste para redimensionar livremente"
                       />
                     ))}
+                  </div>
+                )}
+
+                {/* Subtle GM Facing Indicator & Draggable Aim Handle for Directional Cone FOV */}
+                {mode === 'gm' && token.visionEnabled && token.visionMode === 'cone' && !isText && (
+                  <div
+                    className="absolute inset-0 pointer-events-none"
+                    style={{ transform: `rotate(${token.visionFacing ?? 0}deg)` }}
+                  >
+                    {/* Compact facing arrowhead on the rim */}
+                    <div
+                      className="absolute left-1/2 -translate-x-1/2 -top-2.5 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[8px] border-b-amber-400 drop-shadow"
+                    />
+                    {/* Draggable Aim Handle when single-selected in Move mode */}
+                    {isSelected && selectedTokenIds.length <= 1 && activeTool === 'move' && (
+                      <>
+                        <div className="absolute left-1/2 -translate-x-1/2 -top-8 w-0.5 h-6 bg-amber-400/90" />
+                        <div
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            setAimingVisionTokenId(token.id);
+                          }}
+                          className="absolute left-1/2 -translate-x-1/2 -top-10 w-4 h-4 rounded-full bg-amber-400 border-2 border-stone-950 shadow-md cursor-grab active:cursor-grabbing pointer-events-auto flex items-center justify-center"
+                          title={`Arraste para girar a visão frontal (${Math.round(token.visionFacing ?? 0)}°)`}
+                        >
+                          <div className="w-1.5 h-1.5 rounded-full bg-stone-950" />
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 

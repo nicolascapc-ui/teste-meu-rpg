@@ -1757,6 +1757,23 @@ export async function sendGeneralChatMessage(params: {
   }
 }
 
+export async function deleteGeneralChatMessage(params: {
+  campaignId: string;
+  messageId: string;
+  currentMessages: ChatMessage[];
+}) {
+  const nextMessages = params.currentMessages.filter((m) => m.id !== params.messageId);
+  const ref = doc(db, 'campaigns', params.campaignId, 'live', 'chat');
+  try {
+    await updateDoc(ref, {
+      messages: nextMessages,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${params.campaignId}/live/chat`);
+  }
+}
+
 export function subscribePrivateChatMessages(
   campaignId: string,
   currentUid: string,

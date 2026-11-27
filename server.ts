@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import { parseSheetPdfLocally } from './serverPdfParser.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -328,6 +329,203 @@ async function startServer() {
         const message =
           err instanceof Error ? err.message : 'Erro ao interpretar o PDF da ficha.';
         res.status(500).json({ error: `Falha ao ler PDF: ${message}` });
+      }
+    }
+  );
+
+  // Experimental: AI-assisted Tactical Map Auto-Wall Detection (Gemini Vision)
+  app.post(
+    '/api/detect-tactical-walls',
+    express.json({ limit: '10mb' }),
+    async (req, res) => {
+      try {
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+          res.status(503).json({
+            error:
+              'Chave da API Gemini não configurada no ambiente (Settings > Secrets).',
+          });
+          return;
+        }
+
+        const body = req.body as {
+          imageBase64?: unknown;
+          mimeType?: unknown;
+        };
+        const rawB64 = typeof body?.imageBase64 === 'string' ? body.imageBase64.trim() : '';
+        const mimeType =
+          typeof body?.mimeType === 'string' &&
+          ['image/jpeg', 'image/png', 'image/webp'].includes(body.mimeType.toLowerCase())
+            ? body.mimeType.toLowerCase()
+            : 'image/jpeg';
+
+        if (!rawB64 || rawB64.length > 9 * 1024 * 1024) {
+          res.status(400).json({ error: 'Imagem do mapa inválida ou muito grande.' });
+          return;
+        }
+
+        const cleanB64 = rawB64.replace(/^data:image\/[a-z+.-]+;base64,/i, '');
+        const ai = new GoogleGenAI({
+          apiKey,
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build',
+            },
+          },
+        });
+
+        const prompt = [
+          'Analyze this image for a tabletop RPG virtual tabletop (VTT) dynamic line-of-sight wall system.',
+          'Step 1: Determine if this image is a top-down / overhead tactical battlemap or floorplan (dungeon, building interior, cave corridors, tavern layout, ship deck, streets).',
+          'Set isTacticalMap=false if it is a landscape painting, first-person view, character portrait, isometric non-map illustration, or blank texture without clear walkable rooms/walls.',
+          'Step 2: If isTacticalMap=true, output a CLEAN, SIMPLIFIED base of structural line-of-sight walls and obvious doors.',
+          'Coordinate system: x and y are integers from 0 to 1000 where (0,0) is top-left and (1000,1000) is bottom-right of the image.',
+          'Rules for walls:',
+          '- Trace the main solid walls (outer building walls, room dividers, cavern rock faces, thick columns) that block vision.',
+          '- Mark clear doorway openings with kind="door" and solid walls with kind="wall".',
+          '- Keep it SIMPLE and clean: merge straight collinear wall runs into single segments, connect wall corners neatly at matching endpoints, and return roughly 8 to 80 high-value segments.',
+          '- Ignore floor tiles, tactical grid lines, chairs, tables, carpets, beds, rugs, crates, torches, and small decorative props.',
+          'Respond strictly in the JSON schema, with reason written concisely in Portuguese (pt-BR).',
+        ].join('\n');
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: {
+            parts: [
+              {
+                inlineData: {
+                  mimeType,
+                  data: cleanB64,
+                },
+              },
+              { text: prompt },
+            ],
+          },
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                isTacticalMap: {
+                  type: Type.BOOLEAN,
+                  description: 'True only if the image is a top-down tactical RPG map or floorplan.',
+                },
+                reason: {
+                  type: Type.STRING,
+                  description: 'Short Portuguese explanation of what was identified on the map.',
+                },
+                walls: {
+                  type: Type.ARRAY,
+                  description: 'Simplified structural wall and door line segments in 0..1000 normalized coordinates.',
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      x1: { type: Type.NUMBER },
+                      y1: { type: Type.NUMBER },
+                      x2: { type: Type.NUMBER },
+                      y2: { type: Type.NUMBER },
+                      kind: {
+                        type: Type.STRING,
+                        description: 'Either "wall" or "door".',
+                      },
+                    },
+                    required: ['x1', 'y1', 'x2', 'y2', 'kind'],
+                  },
+                },
+              },
+              required: ['isTacticalMap', 'reason', 'walls'],
+            },
+          },
+        });
+
+        const rawJson = (response.text ?? '').trim();
+        let parsed: {
+          isTacticalMap?: boolean;
+          reason?: string;
+          walls?: Array<{ x1: number; y1: number; x2: number; y2: number; kind?: string }>;
+        };
+        try {
+          parsed = JSON.parse(rawJson);
+        } catch {
+          res.status(502).json({ error: 'Resposta inválida da análise de mapa. Tente novamente.' });
+          return;
+        }
+
+        const isTacticalMap = Boolean(parsed.isTacticalMap);
+        const reason = typeof parsed.reason === 'string' ? parsed.reason.trim().slice(0, 240) : '';
+
+        if (!isTacticalMap) {
+          res.json({
+            isTacticalMap: false,
+            reason:
+              reason ||
+              'A imagem não parece ser um mapa tático visto de cima com paredes bem definidas.',
+            walls: [],
+          });
+          return;
+        }
+
+        // Normalize 0..1000 -> 0..1, drop degenerate micro-segments, and snap nearby corners cleanly
+        const normalized = (Array.isArray(parsed.walls) ? parsed.walls : [])
+          .map((w) => {
+            const x1 = Math.max(0, Math.min(1000, Number(w.x1) || 0)) / 1000;
+            const y1 = Math.max(0, Math.min(1000, Number(w.y1) || 0)) / 1000;
+            const x2 = Math.max(0, Math.min(1000, Number(w.x2) || 0)) / 1000;
+            const y2 = Math.max(0, Math.min(1000, Number(w.y2) || 0)) / 1000;
+            return {
+              x1,
+              y1,
+              x2,
+              y2,
+              kind: w.kind === 'door' ? ('door' as const) : ('wall' as const),
+            };
+          })
+          .filter((w) => Math.hypot(w.x2 - w.x1, w.y2 - w.y1) >= 0.015)
+          .slice(0, 140);
+
+        // Snap endpoints within 1.4% of each other so room corners seal without light leaks
+        const SNAP_DIST = 0.014;
+        const anchors: Array<{ x: number; y: number }> = [];
+        const snapPt = (x: number, y: number) => {
+          for (const a of anchors) {
+            if (Math.hypot(a.x - x, a.y - y) <= SNAP_DIST) {
+              return { x: a.x, y: a.y };
+            }
+          }
+          const pt = {
+            x: Math.round(x * 1000) / 1000,
+            y: Math.round(y * 1000) / 1000,
+          };
+          anchors.push(pt);
+          return pt;
+        };
+
+        const cleanedWalls = normalized
+          .map((w) => {
+            const p1 = snapPt(w.x1, w.y1);
+            const p2 = snapPt(w.x2, w.y2);
+            return {
+              x1: p1.x,
+              y1: p1.y,
+              x2: p2.x,
+              y2: p2.y,
+              kind: w.kind,
+            };
+          })
+          .filter((w) => Math.hypot(w.x2 - w.x1, w.y2 - w.y1) >= 0.015);
+
+        res.json({
+          isTacticalMap: true,
+          reason:
+            reason ||
+            `${cleanedWalls.length} segmento(s) estruturais detectados no mapa tático.`,
+          walls: cleanedWalls,
+        });
+      } catch (err) {
+        console.error('Detect tactical walls failed:', err);
+        const msg = err instanceof Error ? err.message : 'Erro ao analisar o mapa tático.';
+        res.status(500).json({ error: `Falha na análise de muros: ${msg}` });
       }
     }
   );

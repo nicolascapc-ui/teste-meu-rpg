@@ -978,29 +978,157 @@ export function TokenEditorPanel({
                   patch({
                     visionEnabled: e.target.checked,
                     visionRadius: token.visionRadius || 0.34,
+                    visionMode: token.visionMode || 'circle',
+                    visionAngle: token.visionAngle || 90,
+                    visionFacing: token.visionFacing ?? 0,
                   })
                 }
               />
             </label>
 
             {token.visionEnabled && (
-              <label className="block space-y-1">
-                <div className="flex justify-between text-[11px]">
-                  <span className="font-semibold">Alcance da visão</span>
-                  <span className="vtt-muted tabular-nums">
-                    {Math.round((token.visionRadius || 0.34) * 100)}% do mapa
-                  </span>
+              <div className="space-y-3">
+                {/* Vision Shape Mode: Circular 360° vs Directional Front Cone */}
+                <div className="space-y-1.5">
+                  <span className="text-[11px] font-semibold block">Formato da Visão</span>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => patch({ visionMode: 'circle' })}
+                      className={`py-2 px-2 text-[11px] border text-center transition-colors ${
+                        (token.visionMode || 'circle') === 'circle'
+                          ? 'vtt-accent-btn border-transparent font-semibold'
+                          : 'vtt-canvas vtt-border vtt-muted hover:opacity-100'
+                      }`}
+                    >
+                      Circular 360°
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        patch({
+                          visionMode: 'cone',
+                          visionAngle: token.visionAngle || 90,
+                          visionFacing: token.visionFacing ?? 0,
+                        })
+                      }
+                      className={`py-2 px-2 text-[11px] border text-center transition-colors ${
+                        token.visionMode === 'cone'
+                          ? 'vtt-accent-btn border-transparent font-semibold'
+                          : 'vtt-canvas vtt-border vtt-muted hover:opacity-100'
+                      }`}
+                    >
+                      Cone Frontal
+                    </button>
+                  </div>
                 </div>
-                <input
-                  type="range"
-                  min={0.12}
-                  max={0.85}
-                  step={0.02}
-                  value={token.visionRadius || 0.34}
-                  onChange={(e) => patch({ visionRadius: Number(e.target.value) })}
-                  className="w-full"
-                />
-              </label>
+
+                {/* Vision Distance / Reach */}
+                <label className="block space-y-1">
+                  <div className="flex justify-between text-[11px]">
+                    <span className="font-semibold">Distância / Alcance</span>
+                    <span className="vtt-muted tabular-nums">
+                      {Math.round((token.visionRadius || 0.34) * 100)}% do mapa
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1.0}
+                    step={0.02}
+                    value={token.visionRadius || 0.34}
+                    onChange={(e) => patch({ visionRadius: Number(e.target.value) })}
+                    className="w-full"
+                  />
+                </label>
+
+                {/* Directional Cone Options: Opening Angle & Facing Direction */}
+                {token.visionMode === 'cone' && (
+                  <div className="space-y-3 p-2.5 border vtt-border vtt-canvas">
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="font-semibold">Ângulo de Abertura</span>
+                        <span className="vtt-accent-text font-semibold tabular-nums">
+                          {Math.round(token.visionAngle || 90)}°
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={25}
+                        max={240}
+                        step={5}
+                        value={token.visionAngle || 90}
+                        onChange={(e) => patch({ visionAngle: Number(e.target.value) })}
+                        className="w-full"
+                      />
+                      <div className="grid grid-cols-4 gap-1">
+                        {[45, 90, 120, 180].map((deg) => (
+                          <button
+                            key={deg}
+                            type="button"
+                            onClick={() => patch({ visionAngle: deg })}
+                            className={`py-1 text-[10px] border tabular-nums ${
+                              Math.round(token.visionAngle || 90) === deg
+                                ? 'vtt-accent-btn border-transparent font-semibold'
+                                : 'vtt-surface vtt-border vtt-muted hover:opacity-100'
+                            }`}
+                          >
+                            {deg}°
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5 pt-2 border-t vtt-border">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="font-semibold">Direção Frontal</span>
+                        <span className="vtt-muted tabular-nums">
+                          {Math.round(token.visionFacing ?? 0)}°
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={355}
+                        step={5}
+                        value={Math.round(token.visionFacing ?? 0)}
+                        onChange={(e) => patch({ visionFacing: Number(e.target.value) })}
+                        className="w-full"
+                      />
+                      <div className="grid grid-cols-4 gap-1">
+                        {(
+                          [
+                            [0, '↑ N'],
+                            [45, '↗ NE'],
+                            [90, '→ L'],
+                            [135, '↘ SE'],
+                            [180, '↓ S'],
+                            [225, '↙ SO'],
+                            [270, '← O'],
+                            [315, '↖ NO'],
+                          ] as const
+                        ).map(([deg, label]) => (
+                          <button
+                            key={deg}
+                            type="button"
+                            onClick={() => patch({ visionFacing: deg })}
+                            className={`py-1 text-[10px] border ${
+                              Math.round(token.visionFacing ?? 0) === deg
+                                ? 'vtt-accent-btn border-transparent font-semibold'
+                                : 'vtt-surface vtt-border vtt-muted hover:opacity-100'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] vtt-muted leading-snug pt-0.5">
+                        Dica: você também pode arrastar a alça laranja de direção direto no token sobre o mapa.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}

@@ -792,14 +792,22 @@ export function DuelSetupModal({
             {showAttackSfxConfig && (
               <div className="border vtt-border vtt-surface p-3 space-y-2.5">
                 <p className="text-xs font-bold font-typewriter">
-                  Sons de Ataque Customizados (Arquivo MP3 ou Link)
+                  Sons de Ataque no Duelo (MP3 padrão ativo · editável)
                 </p>
                 <p className="text-[11px] vtt-muted">
-                  Personalize o som de cada tipo de ataque do mouse. Você também pode adicionar sons individuais para cada golpe dentro da arena.
+                  Corte, Impacto, Tiro e Magia já tocam os áudios MP3 padrões automaticamente. Só altere abaixo se quiser trocar durante a sessão.
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   {CURSOR_ATTACK_TYPES.map(({ id, label, icon: Icon }) => {
                     const entry = attackSfxMap[id];
+                    const defaultLabel =
+                      id === 'blade'
+                        ? 'Padrão: Corte (Lâmina)'
+                        : id === 'blunt'
+                          ? 'Padrão: Soco / Impacto'
+                          : id === 'shot'
+                            ? 'Padrão: Tiro (Desert Eagle)'
+                            : 'Padrão: Magia (Feitiço)';
                     return (
                       <div key={id} className="border vtt-border vtt-canvas p-2.5 space-y-1.5">
                         <div className="flex items-center justify-between gap-2">
@@ -846,11 +854,11 @@ export function DuelSetupModal({
                           placeholder={
                             entry?.fileName
                               ? `Arquivo: ${entry.fileName}`
-                              : 'Ou cole link https://...mp3'
+                              : `${defaultLabel} (ou cole link MP3)`
                           }
                           className="w-full px-2 py-1 border vtt-border vtt-surface text-[11px]"
                         />
-                        {entry && (entry.url || entry.mediaId) && (
+                        {entry && (entry.url || entry.mediaId) ? (
                           <div className="flex items-center justify-between text-[10px] text-emerald-400">
                             <span className="truncate">
                               ✓ {entry.fileName || 'Link de áudio customizado'}
@@ -863,6 +871,8 @@ export function DuelSetupModal({
                               Usar padrão
                             </button>
                           </div>
+                        ) : (
+                          <p className="text-[10px] vtt-muted truncate">✓ {defaultLabel}</p>
                         )}
                       </div>
                     );

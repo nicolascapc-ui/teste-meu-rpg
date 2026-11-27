@@ -2,5 +2,5 @@
   "name": "Folio — VTT Minimalista",
   "description": "Virtual Tabletop minimalista com estética typewriter e temas por campanha para mestrar RPGs presenciais e online.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

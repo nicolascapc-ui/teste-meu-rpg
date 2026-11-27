@@ -127,7 +127,10 @@ export interface SceneToken {
   hitAtMs?: number;
   statuses?: TokenStatusEffect[];
   visionEnabled?: boolean;
-  visionRadius?: number; // normalized 0.10 .. 0.85
+  visionRadius?: number; // normalized 0.10 .. 1.0
+  visionMode?: 'circle' | 'cone';
+  visionAngle?: number; // cone opening angle in degrees (25 .. 240), default 90
+  visionFacing?: number; // compass direction in degrees (0 = up/north, 90 = right/east, 180 = down/south, 270 = left/west)
   // Text layer fields
   text?: string;
   fontSize?: number; // in 1200px reference units

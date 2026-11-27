@@ -35,9 +35,24 @@ function raySegmentIntersect(
   return null;
 }
 
+export interface VisionConeConfig {
+  /** Compass direction in degrees: 0 = up (north), 90 = right (east), 180 = down (south), 270 = left (west) */
+  facingDeg: number;
+  /** Total cone opening angle in degrees (e.g. 25..240) */
+  spreadDeg: number;
+}
+
+function normalizeAngleDelta(angle: number, center: number): number {
+  let d = angle - center;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
 /**
  * Computes a 2D line-of-sight visibility polygon in pixel coordinates for a token,
  * respecting all solid walls and closed doors, clipped to `radiusPx`.
+ * Supports both full 360-degree circular vision (default) and a directional front cone.
  */
 export function computeVisibilityPolygon(
   originX: number,
@@ -45,7 +60,8 @@ export function computeVisibilityPolygon(
   radiusPx: number,
   walls: SceneWall[],
   stageW: number,
-  stageH: number
+  stageH: number,
+  cone?: VisionConeConfig
 ): Point2D[] {
   const blockingSegments: SegmentPx[] = [];
 
@@ -68,12 +84,27 @@ export function computeVisibilityPolygon(
     { ax: 0, ay: stageH, bx: 0, by: 0 }
   );
 
+  const isCone = Boolean(cone && cone.spreadDeg > 0 && cone.spreadDeg < 355);
+  const centerRad = isCone ? (((cone!.facingDeg ?? 0) - 90) * Math.PI) / 180 : 0;
+  const halfRad = isCone
+    ? (Math.max(15, Math.min(350, cone!.spreadDeg)) * Math.PI) / 360
+    : Math.PI;
+
   const angles: number[] = [];
 
-  // 48 uniform angles for smooth circular vision cone edges
-  const uniformSteps = 48;
-  for (let i = 0; i < uniformSteps; i++) {
-    angles.push((i / uniformSteps) * Math.PI * 2 - Math.PI);
+  if (isCone) {
+    // Smooth arc rays across the directional cone from -halfRad to +halfRad
+    const steps = Math.max(16, Math.ceil((cone!.spreadDeg / 360) * 72));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      angles.push(centerRad - halfRad + t * halfRad * 2);
+    }
+  } else {
+    // 48 uniform angles for smooth 360-degree circular vision edges
+    const uniformSteps = 48;
+    for (let i = 0; i < uniformSteps; i++) {
+      angles.push((i / uniformSteps) * Math.PI * 2 - Math.PI);
+    }
   }
 
   // Exact corner rays (± epsilon) toward every wall/door endpoint inside vision reach
@@ -88,11 +119,24 @@ export function computeVisibilityPolygon(
       const vy = py - originY;
       if (vx * vx + vy * vy > reachSq) continue;
       const baseAngle = Math.atan2(vy, vx);
-      angles.push(baseAngle - 0.00035, baseAngle, baseAngle + 0.00035);
+      if (isCone) {
+        const delta = normalizeAngleDelta(baseAngle, centerRad);
+        if (Math.abs(delta) > halfRad + 0.002) continue;
+        const clampedMinus = Math.max(-halfRad, Math.min(halfRad, delta - 0.00035));
+        const clampedCenter = Math.max(-halfRad, Math.min(halfRad, delta));
+        const clampedPlus = Math.max(-halfRad, Math.min(halfRad, delta + 0.00035));
+        angles.push(
+          centerRad + clampedMinus,
+          centerRad + clampedCenter,
+          centerRad + clampedPlus
+        );
+      } else {
+        angles.push(baseAngle - 0.00035, baseAngle, baseAngle + 0.00035);
+      }
     }
   }
 
-  const hits: Array<{ angle: number; x: number; y: number }> = [];
+  const hits: Array<{ sortKey: number; x: number; y: number }> = [];
 
   for (const angle of angles) {
     const dx = Math.cos(angle);
@@ -107,13 +151,16 @@ export function computeVisibilityPolygon(
     }
 
     hits.push({
-      angle,
+      sortKey: isCone ? normalizeAngleDelta(angle, centerRad) : angle,
       x: originX + dx * closest,
       y: originY + dy * closest,
     });
   }
 
-  hits.sort((a, b) => a.angle - b.angle);
+  hits.sort((a, b) => a.sortKey - b.sortKey);
+  if (isCone) {
+    return [{ x: originX, y: originY }, ...hits.map((h) => ({ x: h.x, y: h.y }))];
+  }
   return hits.map((h) => ({ x: h.x, y: h.y }));
 }
 

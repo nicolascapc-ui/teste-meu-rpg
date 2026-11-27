@@ -13,6 +13,7 @@ import {
   Send,
   Shield,
   Sword,
+  Trash2,
   Upload,
   User as UserIcon,
   Users,
@@ -36,6 +37,8 @@ import {
 } from '../lib/mediaStore';
 import {
   buildDmChannelId,
+  deleteGeneralChatMessage,
+  deletePrivateChatMessage,
   sendGeneralChatMessage,
   sendPrivateChatMessage,
   subscribeLiveGeneralChat,
@@ -105,6 +108,8 @@ export function CampaignChatPanel({
   const [claimedMsgIds, setClaimedMsgIds] = useState<Record<string, boolean>>({});
   const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deletingMsgId, setDeletingMsgId] = useState<string | null>(null);
 
   const listEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -343,6 +348,30 @@ export function CampaignChatPanel({
     }
   }
 
+  async function handleDeleteMessage(msg: ChatMessage) {
+    setDeletingMsgId(msg.id);
+    try {
+      if (mode === 'general') {
+        await deleteGeneralChatMessage({
+          campaignId,
+          messageId: msg.id,
+          currentMessages: liveChat?.messages || [],
+        });
+      } else {
+        await deletePrivateChatMessage(campaignId, msg.id);
+      }
+      if (replyTo?.id === msg.id) {
+        setReplyTo(null);
+      }
+      setConfirmDeleteId(null);
+      onNotify?.('Mensagem excluída.');
+    } catch (err) {
+      onNotify?.(err instanceof Error ? err.message : 'Erro ao excluir mensagem.');
+    } finally {
+      setDeletingMsgId(null);
+    }
+  }
+
   async function handleClaimItem(msgId: string, itemBlock: SheetBlock) {
     if (!onAddItemToSheet) return;
     const sheetId = targetSheetId || sheets[0]?.id;
@@ -497,6 +526,39 @@ export function CampaignChatPanel({
                       >
                         <Reply className="w-3 h-3" />
                       </button>
+                      {(isMine || isGM) &&
+                        (confirmDeleteId === msg.id ? (
+                          <span className="inline-flex items-center gap-1 ml-0.5">
+                            <button
+                              type="button"
+                              disabled={deletingMsgId === msg.id}
+                              onClick={() => void handleDeleteMessage(msg)}
+                              className="px-1.5 py-0.5 text-[10px] font-semibold bg-red-600 text-white hover:bg-red-500 disabled:opacity-50"
+                              title="Confirmar exclusão"
+                            >
+                              {deletingMsgId === msg.id ? '...' : 'Excluir'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(null)}
+                              className="p-0.5 vtt-muted hover:opacity-100"
+                              title="Cancelar"
+                              aria-label="Cancelar exclusão"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(msg.id)}
+                            className="p-0.5 vtt-muted hover:text-red-500 transition-colors"
+                            title="Excluir mensagem"
+                            aria-label="Excluir mensagem"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        ))}
                     </div>
                   </div>
 

@@ -1,3 +1,4 @@
+import { audioEngine } from './audioEngine';
 import { buildAutoItemFormula } from './diceEngine';
 import { resolveMediaUrl } from './mediaStore';
 import type {
@@ -761,28 +762,99 @@ function getSfxContext(): AudioContext | null {
   return sfxCtx;
 }
 
+export const DEFAULT_DUEL_SFX_URLS: Partial<
+  Record<'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield', string>
+> = {
+  blade: '/assets/aistudio/fruit_ninja_slicing_fruit_sound_effect_4__mp3cut.net__d36c150f.mp3',
+  arcane: '/assets/aistudio/magic_spell_hit_-_sound_effect__mp3cut.net__d31a681a.mp3',
+  shot: '/assets/aistudio/Desert_Eagle_Single_Shot_Gunshot_Sound_Effect_4__mp3cut.net__fef90a08.mp3',
+  blunt: '/assets/aistudio/More_Punch_Sound_Effects__mp3cut.net__f1610e00.mp3',
+};
+
+const defaultSfxAudioCache = new Map<string, HTMLAudioElement>();
+
+function getSfxEffectiveVolume(): number {
+  const vols = audioEngine.getVolumes();
+  if (vols.muted) return 0;
+  return Math.max(0, Math.min(1, vols.master * vols.sfx));
+}
+
+function playOneShotAudioUrl(
+  url: string,
+  fallbackKind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield'
+) {
+  const volume = getSfxEffectiveVolume();
+  if (volume <= 0.001) return;
+
+  try {
+    let base = defaultSfxAudioCache.get(url);
+    if (!base) {
+      base = new Audio(url);
+      base.preload = 'auto';
+      if (!url.startsWith('/')) {
+        base.crossOrigin = 'anonymous';
+      }
+      defaultSfxAudioCache.set(url, base);
+    }
+    const instance = base.cloneNode(true) as HTMLAudioElement;
+    instance.volume = volume;
+    instance.currentTime = 0;
+    void instance.play().catch(() => {
+      playProceduralCombatSfx(fallbackKind);
+    });
+  } catch {
+    playProceduralCombatSfx(fallbackKind);
+  }
+}
+
 export function playCombatCursorSfx(
   kind: 'blade' | 'blunt' | 'shot' | 'arcane' | 'heal' | 'shield',
   customSfx?: { url?: string; mediaId?: string; campaignId?: string }
 ) {
+  const volume = getSfxEffectiveVolume();
+  if (volume <= 0.001) return;
+
   if (customSfx && (customSfx.url || customSfx.mediaId)) {
     void resolveMediaUrl(customSfx.mediaId, customSfx.url || '', customSfx.campaignId)
       .then((resolved) => {
         if (!resolved) {
-          playProceduralCombatSfx(kind);
+          const defaultUrl = DEFAULT_DUEL_SFX_URLS[kind];
+          if (defaultUrl) {
+            playOneShotAudioUrl(defaultUrl, kind);
+          } else {
+            playProceduralCombatSfx(kind);
+          }
           return;
         }
         const audio = new Audio();
-        audio.crossOrigin = 'anonymous';
+        if (!resolved.startsWith('/')) {
+          audio.crossOrigin = 'anonymous';
+        }
         audio.src = resolved;
-        audio.volume = 0.85;
+        audio.volume = volume;
         void audio.play().catch(() => {
-          playProceduralCombatSfx(kind);
+          const defaultUrl = DEFAULT_DUEL_SFX_URLS[kind];
+          if (defaultUrl) {
+            playOneShotAudioUrl(defaultUrl, kind);
+          } else {
+            playProceduralCombatSfx(kind);
+          }
         });
       })
       .catch(() => {
-        playProceduralCombatSfx(kind);
+        const defaultUrl = DEFAULT_DUEL_SFX_URLS[kind];
+        if (defaultUrl) {
+          playOneShotAudioUrl(defaultUrl, kind);
+        } else {
+          playProceduralCombatSfx(kind);
+        }
       });
+    return;
+  }
+
+  const defaultUrl = DEFAULT_DUEL_SFX_URLS[kind];
+  if (defaultUrl) {
+    playOneShotAudioUrl(defaultUrl, kind);
     return;
   }
 

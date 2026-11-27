@@ -75,6 +75,7 @@ import { applyCampaignTheme, DEFAULT_THEME, getSceneEffects, sanitizeTheme } fro
 import { audioEngine } from '../lib/audioEngine';
 import { evaluateDiceFormula, isDiceFormula, type RollMode } from '../lib/diceEngine';
 import { resolveMediaUrl, uploadMediaFile } from '../lib/mediaStore';
+import { detectTacticalMapWalls } from '../lib/tacticalWallDetector';
 import {
   findSheetForToken,
   loadCampaignDuelsByScene,
@@ -213,6 +214,7 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
   const lastAutoPopupTrackKeyRef = useRef<string>('');
   const [showQrModal, setShowQrModal] = useState(false);
   const [previewHandout, setPreviewHandout] = useState(false);
+  const [detectingWalls, setDetectingWalls] = useState(false);
   const [toast, setToast] = useState('');
   const [activeRollAnim, setActiveRollAnim] = useState<ActiveDiceAnimation | null>(null);
 
@@ -1062,6 +1064,54 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       );
     } catch {
       notify('Erro ao salvar muros e portas.');
+    }
+  }
+
+  async function handleAutoDetectTacticalWalls() {
+    if (!campaign || !activeScene) return;
+    if (activeScene.category !== 'tactical') {
+      notify(
+        'O Auto-Muros experimental funciona apenas em cenas da categoria "Mapa Tático".'
+      );
+      return;
+    }
+    if (activeScene.mediaKind === 'video') {
+      notify('O Auto-Muros requer uma imagem de mapa tático (não suporta vídeo).');
+      return;
+    }
+    if (!activeScene.mediaId && !activeScene.imageUrl) {
+      notify('Adicione uma imagem de mapa tático nesta cena antes de detectar muros.');
+      return;
+    }
+    setDetectingWalls(true);
+    try {
+      const resolvedUrl = await resolveMediaUrl(
+        activeScene.mediaId,
+        activeScene.imageUrl,
+        campaign.id
+      );
+      const result = await detectTacticalMapWalls(resolvedUrl);
+      if (!result.isTacticalMap || result.walls.length === 0) {
+        notify(
+          result.reason ||
+            'Não foi possível identificar paredes de mapa tático nesta imagem.'
+        );
+        return;
+      }
+      await handleWallsChange(result.walls);
+      const doorsCount = result.walls.filter((w) => w.kind === 'door').length;
+      const wallsCount = result.walls.length - doorsCount;
+      notify(
+        `Base automática gerada: ${wallsCount} muro(s)${doorsCount > 0 ? ` e ${doorsCount} porta(s)` : ''}. Use Ctrl+Z para desfazer ou ajuste livremente.`
+      );
+    } catch (err) {
+      notify(
+        err instanceof Error
+          ? err.message
+          : 'Erro ao analisar os muros do mapa tático.'
+      );
+    } finally {
+      setDetectingWalls(false);
     }
   }
 
@@ -2400,6 +2450,24 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 </div>
 
                 <div className="flex items-center gap-1.5 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={detectingWalls || activeScene.category !== 'tactical'}
+                    onClick={() => void handleAutoDetectTacticalWalls()}
+                    className={`px-2.5 py-1 border flex items-center gap-1 whitespace-nowrap ${
+                      activeScene.category === 'tactical'
+                        ? 'vtt-surface vtt-border hover:vtt-accent-btn disabled:opacity-50'
+                        : 'vtt-surface vtt-border opacity-45 cursor-not-allowed'
+                    }`}
+                    title={
+                      activeScene.category === 'tactical'
+                        ? 'Experimental: analisa a imagem do mapa tático e cria uma base simples de muros e portas automaticamente'
+                        : 'Disponível apenas em cenas da categoria Mapa Tático'
+                    }
+                  >
+                    <Sparkles className={`w-3.5 h-3.5 ${detectingWalls ? 'animate-spin' : 'vtt-accent-text'}`} />
+                    {detectingWalls ? 'Analisando mapa...' : 'Auto-Muros (Exp.)'}
+                  </button>
                   <button
                     type="button"
                     onClick={() => void handleToggleDynamicVision()}
