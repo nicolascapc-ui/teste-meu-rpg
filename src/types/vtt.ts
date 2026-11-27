@@ -625,6 +625,25 @@ export interface LiveAudioState {
   updatedAtMs: number;
 }
 
+export type PlayerMapMarkerKind = 'ping' | 'path' | 'token';
+
+export interface PlayerMapMarker {
+  id: string;
+  sceneId: string;
+  kind: PlayerMapMarkerKind;
+  authorUid: string;
+  authorName: string;
+  color: string;
+  label?: string;
+  x: number; // normalized 0..1 (target / destination point)
+  y: number; // normalized 0..1
+  points?: Array<{ x: number; y: number }>; // normalized 0..1 route polyline
+  tokenId?: string;
+  tokenName?: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+}
+
 export interface LiveTableState {
   campaignId: string;
   gmUid: string;
@@ -635,6 +654,7 @@ export interface LiveTableState {
   interludeConfig?: InterludeConfig | null;
   liveAudio?: LiveAudioState | null;
   investigationJournal?: InvestigationJournalEntry[];
+  playerMarkers?: PlayerMapMarker[];
   recentPublicRolls: PublicRollSummary[];
   shakePulseMs?: number;
   updatedAt?: Timestamp | number;
@@ -726,4 +746,5 @@ export const FIELD_LIMITS = {
   MAX_BLOCKS: 100,
   MAX_PUBLIC_ROLLS: 40,
   MAX_PUBLIC_NOTES: 80,
+  MAX_PLAYER_MARKERS: 30,
 } as const;

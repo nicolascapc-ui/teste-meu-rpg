@@ -169,6 +169,7 @@ export function SecondScreenView({ campaignId }: SecondScreenViewProps) {
           scene={liveState.activeScene}
           mode="screen"
           activeDuel={activeDuel}
+          playerMarkers={liveState.playerMarkers || []}
         />
 
         {/* GM-Controlled Forced Section Overlay on Visualization Screen (when no duel or investigation is active) */}

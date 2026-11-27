@@ -1,17 +1,26 @@
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
-import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Point pdfjs-dist legacy worker to the local bundled worker file so Node.js runs 100% locally.
-const localWorkerPath = path.resolve(
-  __dirname,
-  'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'
-);
-if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(localWorkerPath).href;
+type PdfJsModule = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
+let pdfjsLibPromise: Promise<PdfJsModule> | null = null;
+
+async function getPdfJsLib(): Promise<PdfJsModule> {
+  if (!pdfjsLibPromise) {
+    pdfjsLibPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((mod) => {
+      const localWorkerPath = path.resolve(
+        __dirname,
+        'node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'
+      );
+      if (!mod.GlobalWorkerOptions.workerSrc) {
+        mod.GlobalWorkerOptions.workerSrc = pathToFileURL(localWorkerPath).href;
+      }
+      return mod;
+    });
+  }
+  return pdfjsLibPromise;
 }
 
 export interface ParsedSheetBlock {
@@ -272,6 +281,7 @@ async function extractPdfContent(pdfBuffer: Buffer): Promise<{
   pdfTitle: string;
   pageCount: number;
 }> {
+  const pdfjsLib = await getPdfJsLib();
   const loadingTask = pdfjsLib.getDocument({
     data: new Uint8Array(pdfBuffer),
     useWorkerFetch: false,

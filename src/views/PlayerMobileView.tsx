@@ -30,11 +30,14 @@ import { applyCampaignTheme, getSceneEffects } from '../lib/themes';
 import { evaluateDiceFormula, isDiceFormula, type RollMode } from '../lib/diceEngine';
 import { resolveMediaUrl } from '../lib/mediaStore';
 import {
+  clearPlayerMapMarkers,
   createCharacterSheet,
   deleteCharacterSheet,
   joinCampaignByRoomCode,
+  publishPlayerMapMarker,
   recordDiceRoll,
   removeInvestigationJournalEntry,
+  removePlayerMapMarker,
   saveInvestigationJournalEntry,
   subscribeLiveState,
   subscribeLiveWiki,
@@ -589,6 +592,25 @@ export function PlayerMobileView({
                 scene={liveState?.activeScene || null}
                 mode="player"
                 activeDuel={activeDuel}
+                playerMarkers={liveState?.playerMarkers || []}
+                currentUserUid={user.uid}
+                currentUserName={sheets[0]?.name || user.displayName || 'Jogador'}
+                onPublishPlayerMarker={(marker) => {
+                  if (!campaignId) return;
+                  void publishPlayerMapMarker(campaignId, marker, liveState);
+                }}
+                onRemovePlayerMarker={(markerId) => {
+                  if (!campaignId) return;
+                  void removePlayerMapMarker(campaignId, markerId, liveState);
+                }}
+                onClearPlayerMarkers={(scope) => {
+                  if (!campaignId) return;
+                  void clearPlayerMapMarkers(campaignId, liveState, {
+                    sceneId: liveState?.activeScene?.id,
+                    authorUid: scope === 'mine' ? user.uid : undefined,
+                  });
+                }}
+                onNotify={setToast}
               />
               {!activeDuel && !activeInvestigation && playerViewMode === 'standby' && (
                 <div className="absolute inset-0 z-30 vtt-canvas flex flex-col items-center justify-center p-6 text-center overflow-hidden">

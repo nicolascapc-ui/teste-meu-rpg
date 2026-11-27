@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookmarkPlus,
+  Crosshair,
   DoorClosed,
   DoorOpen,
   Eye,
@@ -11,7 +12,9 @@ import {
   Lock,
   Maximize2,
   Moon,
+  MousePointerClick,
   RotateCcw,
+  Route,
   Search,
   Skull,
   SlidersHorizontal,
@@ -31,6 +34,7 @@ import type {
   BrushStyleId,
   FogStroke,
   LiveSceneSnapshot,
+  PlayerMapMarker,
   SceneToken,
   SceneWall,
   TokenVitalStatus,
@@ -79,6 +83,12 @@ interface TabletopCanvasProps {
   onSaveToVault?: (token: SceneToken) => void;
   onToolChange?: (tool: CanvasTool) => void;
   onNotify?: (msg: string) => void;
+  playerMarkers?: PlayerMapMarker[];
+  currentUserUid?: string;
+  currentUserName?: string;
+  onPublishPlayerMarker?: (marker: PlayerMapMarker) => void;
+  onRemovePlayerMarker?: (markerId: string) => void;
+  onClearPlayerMarkers?: (scope: 'mine' | 'all') => void;
 }
 
 interface RulerState {
@@ -135,6 +145,44 @@ interface GroupDragState {
 }
 
 const REFERENCE_MAP_WIDTH = 1200;
+const PLAYER_MARKER_TTL_MS = 22000;
+const PLAYER_MARKER_FADE_MS = 3500;
+const PLAYER_MARKER_PALETTE = [
+  '#38bdf8', // sky
+  '#34d399', // emerald
+  '#fbbf24', // amber
+  '#f472b6', // pink
+  '#a78bfa', // violet
+  '#fb923c', // orange
+];
+
+function getPlayerMarkerColor(uid: string): string {
+  if (!uid) return PLAYER_MARKER_PALETTE[0];
+  let hash = 0;
+  for (let i = 0; i < uid.length; i++) {
+    hash = (hash * 31 + uid.charCodeAt(i)) >>> 0;
+  }
+  return PLAYER_MARKER_PALETTE[hash % PLAYER_MARKER_PALETTE.length];
+}
+
+function computePolylineUnits(
+  points: Array<{ x: number; y: number }>,
+  mapW: number,
+  mapH: number,
+  cellSizePx: number,
+  unitValue: number
+): number {
+  if (points.length < 2) return 0;
+  let totalPx = 0;
+  for (let i = 1; i < points.length; i++) {
+    totalPx += Math.hypot(
+      (points[i].x - points[i - 1].x) * mapW,
+      (points[i].y - points[i - 1].y) * mapH
+    );
+  }
+  const cell = Math.max(12, cellSizePx || 56);
+  return (totalPx / cell) * (unitValue || 1.5);
+}
 
 function getTokenShadowStyle(token: SceneToken, isHit: boolean): string | undefined {
   if (isHit) {
@@ -212,6 +260,12 @@ export function TabletopCanvas({
   onSaveToVault,
   onToolChange,
   onNotify,
+  playerMarkers = [],
+  currentUserUid = '',
+  currentUserName = 'Jogador',
+  onPublishPlayerMarker,
+  onRemovePlayerMarker,
+  onClearPlayerMarkers,
 }: TabletopCanvasProps) {
   const outerStageRef = useRef<HTMLDivElement | null>(null);
   const mapBoxRef = useRef<HTMLDivElement | null>(null);
@@ -248,11 +302,134 @@ export function TabletopCanvas({
   const [isPanning, setIsPanning] = useState(false);
   const panStartRef = useRef<{ clientX: number; clientY: number; startX: number; startY: number } | null>(null);
 
-  // Reset zoom & pan cleanly when switching to a different scene
+  // Player Point & Click temporary indication state (strictly visual — players NEVER mutate scene tokens!)
+  const [playerTool, setPlayerTool] = useState<'point' | 'path'>('point');
+  const [playerSelectedTokenId, setPlayerSelectedTokenId] = useState<string | null>(null);
+  const [playerPathDraft, setPlayerPathDraft] = useState<{
+    points: Array<{ x: number; y: number }>;
+    tokenId?: string;
+    tokenName?: string;
+    isFreehand: boolean;
+  } | null>(null);
+  const [localOptimisticMarkers, setLocalOptimisticMarkers] = useState<PlayerMapMarker[]>([]);
+  const [markerNowMs, setMarkerNowMs] = useState(() => Date.now());
+
+  // Reset zoom, pan & player local selection cleanly when switching to a different scene
   useEffect(() => {
     setMapZoom(1);
     setMapPan({ x: 0, y: 0 });
+    setPlayerSelectedTokenId(null);
+    setPlayerPathDraft(null);
   }, [scene?.id]);
+
+  // Merge synced player markers with instant optimistic local markers and prune expired ones
+  const mergedSceneMarkers = useMemo(() => {
+    if (!scene?.id) return [];
+    const byId = new Map<string, PlayerMapMarker>();
+    for (const m of playerMarkers) {
+      if (m && m.sceneId === scene.id) byId.set(m.id, m);
+    }
+    for (const m of localOptimisticMarkers) {
+      if (m && m.sceneId === scene.id && !byId.has(m.id)) {
+        byId.set(m.id, m);
+      }
+    }
+    return Array.from(byId.values()).sort((a, b) => a.createdAtMs - b.createdAtMs);
+  }, [playerMarkers, localOptimisticMarkers, scene?.id]);
+
+  // Clear local optimistic marker once it appears in synced Firestore state (or expires)
+  useEffect(() => {
+    if (localOptimisticMarkers.length === 0) return;
+    const syncedIds = new Set(playerMarkers.map((m) => m.id));
+    const now = Date.now();
+    setLocalOptimisticMarkers((prev) => {
+      const next = prev.filter((m) => !syncedIds.has(m.id) && m.expiresAtMs > now);
+      return next.length === prev.length ? prev : next;
+    });
+  }, [playerMarkers, localOptimisticMarkers.length]);
+
+  // Lightweight 400ms ticker ONLY while active temporary markers exist so fade-out & auto-expiry are smooth
+  useEffect(() => {
+    const now = Date.now();
+    const hasAlive = mergedSceneMarkers.some((m) => m.expiresAtMs > now);
+    if (!hasAlive) return;
+    setMarkerNowMs(now);
+    const id = window.setInterval(() => {
+      setMarkerNowMs(Date.now());
+    }, 400);
+    return () => window.clearInterval(id);
+  }, [mergedSceneMarkers]);
+
+  const activePlayerMarkers = useMemo(
+    () => mergedSceneMarkers.filter((m) => m.expiresAtMs > markerNowMs),
+    [mergedSceneMarkers, markerNowMs]
+  );
+
+  const myActiveMarkersCount = useMemo(
+    () =>
+      currentUserUid
+        ? activePlayerMarkers.filter((m) => m.authorUid === currentUserUid).length
+        : 0,
+    [activePlayerMarkers, currentUserUid]
+  );
+
+  const playerSelectedToken = useMemo(
+    () =>
+      mode === 'player' && playerSelectedTokenId
+        ? localTokens.find((t) => t.id === playerSelectedTokenId && !t.hiddenFromPlayers) || null
+        : null,
+    [mode, playerSelectedTokenId, localTokens]
+  );
+
+  function emitPlayerMarker(params: {
+    kind: PlayerMapMarker['kind'];
+    x: number;
+    y: number;
+    points?: Array<{ x: number; y: number }>;
+    tokenId?: string;
+    tokenName?: string;
+    label?: string;
+  }) {
+    if (!scene || !currentUserUid || !onPublishPlayerMarker) return;
+    const now = Date.now();
+    const marker: PlayerMapMarker = {
+      id: `pmk_${now.toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      sceneId: scene.id,
+      kind: params.kind,
+      authorUid: currentUserUid,
+      authorName: currentUserName || 'Jogador',
+      color: getPlayerMarkerColor(currentUserUid),
+      label: params.label,
+      x: Number(Math.max(0, Math.min(1, params.x)).toFixed(4)),
+      y: Number(Math.max(0, Math.min(1, params.y)).toFixed(4)),
+      points: params.points,
+      tokenId: params.tokenId,
+      tokenName: params.tokenName,
+      createdAtMs: now,
+      expiresAtMs: now + PLAYER_MARKER_TTL_MS,
+    };
+    setMarkerNowMs(now);
+    setLocalOptimisticMarkers((prev) => {
+      const others = prev.filter((m) => m.authorUid !== marker.authorUid && m.expiresAtMs > now);
+      const mine = prev.filter((m) => m.authorUid === marker.authorUid && m.expiresAtMs > now).slice(-2);
+      return [...others, ...mine, marker];
+    });
+    onPublishPlayerMarker(marker);
+  }
+
+  function handleDismissMarker(markerId: string) {
+    setLocalOptimisticMarkers((prev) => prev.filter((m) => m.id !== markerId));
+    onRemovePlayerMarker?.(markerId);
+  }
+
+  function handleClearMarkers(scope: 'mine' | 'all') {
+    if (scope === 'all') {
+      setLocalOptimisticMarkers([]);
+    } else if (currentUserUid) {
+      setLocalOptimisticMarkers((prev) => prev.filter((m) => m.authorUid !== currentUserUid));
+    }
+    onClearPlayerMarkers?.(scope);
+  }
 
   // Seamless camera zoom origin for transitioning into/out of 3D Duel Mode
   const effectiveDuel = activeDuelProp !== undefined ? activeDuelProp : scene?.activeDuel || null;
@@ -890,6 +1067,28 @@ export function TabletopCanvas({
       return;
     }
 
+    // Player Point & Click Interaction: tap to indicate location/move destination, or drag to trace route
+    if (mode === 'player' && !effectiveDuel && onPublishPlayerMarker) {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const pt = { x: Number(nx.toFixed(4)), y: Number(ny.toFixed(4)) };
+      const selTok = playerSelectedToken;
+      if (selTok) {
+        const origin = { x: Number(selTok.x.toFixed(4)), y: Number(selTok.y.toFixed(4)) };
+        setPlayerPathDraft({
+          points: playerTool === 'path' ? [origin, pt] : [origin, pt],
+          tokenId: selTok.id,
+          tokenName: selTok.name,
+          isFreehand: playerTool === 'path',
+        });
+      } else {
+        setPlayerPathDraft({
+          points: [pt],
+          isFreehand: playerTool === 'path',
+        });
+      }
+      return;
+    }
+
     setSelectedTokenId(null);
     setSelectedTokenIds([]);
     setEditingTextId(null);
@@ -910,6 +1109,24 @@ export function TabletopCanvas({
 
     const { px, py, nx, ny } = getRelativeCoords(e.clientX, e.clientY);
     lastHoverCoordsRef.current = { nx, ny };
+
+    // Active Player Point & Click Path Tracing preview
+    if (playerPathDraft && mode === 'player') {
+      const pt = { x: Number(nx.toFixed(4)), y: Number(ny.toFixed(4)) };
+      setPlayerPathDraft((prev) => {
+        if (!prev) return null;
+        const last = prev.points[prev.points.length - 1];
+        if (last && Math.hypot(pt.x - last.x, pt.y - last.y) < 0.012) {
+          return prev;
+        }
+        return {
+          ...prev,
+          isFreehand: true,
+          points: [...prev.points, pt].slice(0, 38),
+        };
+      });
+      return;
+    }
 
     if (ruler) {
       setRuler((prev) => (prev ? { ...prev, endX: px, endY: py } : null));
@@ -1111,6 +1328,54 @@ export function TabletopCanvas({
       panStartRef.current = null;
       return;
     }
+    if (playerPathDraft && mode === 'player') {
+      const draft = playerPathDraft;
+      setPlayerPathDraft(null);
+      const pts = draft.points;
+      if (pts.length > 0) {
+        const endPt = pts[pts.length - 1];
+        if (draft.tokenId && pts.length >= 2) {
+          const dist = Math.hypot(endPt.x - pts[0].x, endPt.y - pts[0].y);
+          if (dist < 0.015 && pts.length <= 2) {
+            // Clicked directly on top of the selected token -> highlight it
+            emitPlayerMarker({
+              kind: 'token',
+              x: pts[0].x,
+              y: pts[0].y,
+              tokenId: draft.tokenId,
+              tokenName: draft.tokenName,
+              label: draft.tokenName || 'Token',
+            });
+          } else {
+            emitPlayerMarker({
+              kind: 'path',
+              x: endPt.x,
+              y: endPt.y,
+              points: pts,
+              tokenId: draft.tokenId,
+              tokenName: draft.tokenName,
+              label: draft.tokenName ? `Ir com ${draft.tokenName}` : 'Ir aqui',
+            });
+          }
+        } else if (pts.length >= 3) {
+          emitPlayerMarker({
+            kind: 'path',
+            x: endPt.x,
+            y: endPt.y,
+            points: pts,
+            label: 'Caminho',
+          });
+        } else {
+          emitPlayerMarker({
+            kind: 'ping',
+            x: endPt.x,
+            y: endPt.y,
+            label: 'Aqui',
+          });
+        }
+      }
+      return;
+    }
     if (ruler) {
       setRuler(null);
     }
@@ -1231,8 +1496,54 @@ export function TabletopCanvas({
   }
 
   function handleTokenPointerDown(e: React.PointerEvent, token: SceneToken) {
-    if (mode !== 'gm') return;
     if (e.button !== 0) return;
+
+    // Player Point & Click token selection & target signaling (read-only — never moves or edits tokens!)
+    if (mode === 'player') {
+      if (
+        effectiveDuel ||
+        token.hiddenFromPlayers ||
+        token.isInvestigationTrigger ||
+        token.layerKind === 'text' ||
+        token.layerKind === 'brush'
+      ) {
+        return;
+      }
+      e.stopPropagation();
+
+      // In Path tool: start tracing a route directly from this token's position
+      if (playerTool === 'path' && onPublishPlayerMarker) {
+        setPlayerSelectedTokenId(token.id);
+        mapBoxRef.current?.setPointerCapture(e.pointerId);
+        const origin = { x: Number(token.x.toFixed(4)), y: Number(token.y.toFixed(4)) };
+        setPlayerPathDraft({
+          points: [origin],
+          tokenId: token.id,
+          tokenName: token.name,
+          isFreehand: true,
+        });
+        return;
+      }
+
+      // In Point & Click mode: first click selects the token to plan a move; second click pings/highlights it
+      if (playerSelectedTokenId === token.id) {
+        emitPlayerMarker({
+          kind: 'token',
+          x: token.x,
+          y: token.y,
+          tokenId: token.id,
+          tokenName: token.name,
+          label: token.name,
+        });
+        onNotify?.(`Sinalizou "${token.name}" no mapa.`);
+      } else {
+        setPlayerSelectedTokenId(token.id);
+        onNotify?.(`"${token.name}" selecionado — clique no mapa para indicar para onde ir.`);
+      }
+      return;
+    }
+
+    if (mode !== 'gm') return;
 
     // 1. Explicit Duel Tool ('duel' tool in top toolbar or active duelCandidateId)
     const isExplicitDuelTool = activeTool === 'duel' || Boolean(duelCandidateId);
@@ -1595,18 +1906,22 @@ export function TabletopCanvas({
     scene.mediaKind || detectSceneMediaKind(scene.imageUrl || bgUrl);
 
   const cursorClass =
-    mode !== 'gm'
-      ? 'cursor-default'
-      : activeTool === 'ruler' ||
-          activeTool === 'wall' ||
-          activeTool === 'door' ||
-          activeTool === 'brush'
+    mode === 'player'
+      ? playerTool === 'path'
         ? 'cursor-crosshair'
-        : activeTool === 'text'
-          ? 'cursor-text'
-          : activeTool === 'fog_reveal' || activeTool === 'fog_hide' || activeTool === 'wall_erase'
-            ? 'cursor-cell'
-            : 'cursor-default';
+        : 'cursor-pointer'
+      : mode !== 'gm'
+        ? 'cursor-default'
+        : activeTool === 'ruler' ||
+            activeTool === 'wall' ||
+            activeTool === 'door' ||
+            activeTool === 'brush'
+          ? 'cursor-crosshair'
+          : activeTool === 'text'
+            ? 'cursor-text'
+            : activeTool === 'fog_reveal' || activeTool === 'fog_hide' || activeTool === 'wall_erase'
+              ? 'cursor-cell'
+              : 'cursor-default';
 
   const scaledCellSize = Math.max(8, (scene.grid.cellSizePx || 56) * mapScale);
   const scaledOffsetX = (scene.grid.offsetX || 0) * mapScale;
@@ -2036,16 +2351,36 @@ export function TabletopCanvas({
                       : token.locked
                         ? 'pointer-events-auto cursor-default'
                         : 'pointer-events-auto cursor-grab active:cursor-grabbing'
-                    : 'pointer-events-none'
-                } ${isSelected ? 'z-20' : 'z-10'}`}
+                    : mode === 'player' &&
+                        !isText &&
+                        !token.isInvestigationTrigger &&
+                        !token.hiddenFromPlayers
+                      ? 'pointer-events-auto cursor-pointer'
+                      : 'pointer-events-none'
+                } ${isSelected || (mode === 'player' && playerSelectedTokenId === token.id) ? 'z-20' : 'z-10'}`}
                 title={
                   mode === 'gm'
                     ? token.isInvestigationTrigger
                       ? `${token.name} (Só Mestre · Clique para abrir a Cena de Investigação · Arraste para mover)`
                       : `${token.name} (arraste para mover · arraste caixa no mapa para selecionar vários · botão direito com 2 selecionados para Duelo 3D)`
-                    : token.name
+                    : mode === 'player' && !isText
+                      ? `${token.name} (clique para selecionar e indicar destino · clique novamente para sinalizar)`
+                      : token.name
                 }
               >
+                {/* Player Local Selection Halo (Point & Click planning indicator) */}
+                {mode === 'player' && playerSelectedTokenId === token.id && !isText && (
+                  <div
+                    className={`absolute -inset-2 ${
+                      isRect ? 'rounded-none' : 'rounded-full'
+                    } border-2 border-dashed pointer-events-none`}
+                    style={{
+                      borderColor: getPlayerMarkerColor(currentUserUid),
+                      boxShadow: `0 0 16px ${getPlayerMarkerColor(currentUserUid)}aa`,
+                    }}
+                  />
+                )}
+
                 {/* Rotating Aura Ring Behavior */}
                 {token.behavior === 'spin_ring' && !isText && vitalStatus === 'alive' && (
                   <div
@@ -2486,6 +2821,244 @@ export function TabletopCanvas({
                 </button>
               );
             })}
+
+        {/* Temporary Player Point & Click Markers, Traced Routes & Token Signals (Synced on GM, Player & TV) */}
+        {(activePlayerMarkers.length > 0 || (mode === 'player' && playerPathDraft)) && (
+          <>
+            {/* Animated Route / Path SVG Layer */}
+            <svg className="absolute inset-0 w-full h-full pointer-events-none z-[28]">
+              {activePlayerMarkers.map((marker) => {
+                if (marker.kind !== 'path' || !marker.points || marker.points.length < 2) {
+                  return null;
+                }
+                const remainingMs = Math.max(0, marker.expiresAtMs - markerNowMs);
+                const fadeAlpha = Math.min(1, remainingMs / PLAYER_MARKER_FADE_MS);
+                const w = mapBoxSize.width;
+                const h = mapBoxSize.height;
+                const d = pointsToSvgPath(marker.points, w, h);
+                const lastPt = marker.points[marker.points.length - 1];
+                const prevPt = marker.points[marker.points.length - 2];
+                const x1 = prevPt.x * w;
+                const y1 = prevPt.y * h;
+                const x2 = lastPt.x * w;
+                const y2 = lastPt.y * h;
+                const angle = Math.atan2(y2 - y1, x2 - x1);
+                const headLen = 14;
+                const a1x = x2 - headLen * Math.cos(angle - Math.PI / 6);
+                const a1y = y2 - headLen * Math.sin(angle - Math.PI / 6);
+                const a2x = x2 - headLen * Math.cos(angle + Math.PI / 6);
+                const a2y = y2 - headLen * Math.sin(angle + Math.PI / 6);
+                const startX = marker.points[0].x * w;
+                const startY = marker.points[0].y * h;
+
+                return (
+                  <g key={`pmk_path_${marker.id}`} opacity={fadeAlpha}>
+                    <path
+                      d={d}
+                      fill="none"
+                      stroke="rgba(0,0,0,0.72)"
+                      strokeWidth={6.5}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d={d}
+                      fill="none"
+                      stroke={marker.color}
+                      strokeWidth={3.2}
+                      strokeDasharray="10 6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="player-path-march"
+                    />
+                    <circle
+                      cx={startX}
+                      cy={startY}
+                      r={4.5}
+                      fill={marker.color}
+                      stroke="#0c0a09"
+                      strokeWidth={2}
+                    />
+                    <polygon
+                      points={`${x2},${y2} ${a1x},${a1y} ${a2x},${a2y}`}
+                      fill={marker.color}
+                      stroke="#0c0a09"
+                      strokeWidth={1.2}
+                    />
+                  </g>
+                );
+              })}
+
+              {/* Live Path Draft while player is dragging */}
+              {mode === 'player' && playerPathDraft && playerPathDraft.points.length >= 2 && (() => {
+                const draftCol = getPlayerMarkerColor(currentUserUid);
+                const w = mapBoxSize.width;
+                const h = mapBoxSize.height;
+                const d = pointsToSvgPath(playerPathDraft.points, w, h);
+                return (
+                  <g opacity={0.9}>
+                    <path
+                      d={d}
+                      fill="none"
+                      stroke="rgba(0,0,0,0.65)"
+                      strokeWidth={6}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d={d}
+                      fill="none"
+                      stroke={draftCol}
+                      strokeWidth={3}
+                      strokeDasharray="8 6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="player-path-march"
+                    />
+                  </g>
+                );
+              })()}
+            </svg>
+
+            {/* Point & Click Destination Beacons, Token Lock Halos & Interactive Labels */}
+            <div className="absolute inset-0 pointer-events-none z-[29]">
+              {activePlayerMarkers.map((marker) => {
+                const remainingMs = Math.max(0, marker.expiresAtMs - markerNowMs);
+                const fadeAlpha = Math.min(1, remainingMs / PLAYER_MARKER_FADE_MS);
+                const liveToken = marker.tokenId
+                  ? localTokens.find((t) => t.id === marker.tokenId) || null
+                  : null;
+                const posX = marker.kind === 'token' && liveToken ? liveToken.x : marker.x;
+                const posY = marker.kind === 'token' && liveToken ? liveToken.y : marker.y;
+                const tokenSpan = liveToken
+                  ? Math.max(46, Math.max(liveToken.widthPx || liveToken.sizePx || 52, liveToken.heightPx || liveToken.sizePx || 52) + 18)
+                  : 58;
+                const canDismiss =
+                  mode === 'gm' || (mode === 'player' && marker.authorUid === currentUserUid);
+                const distUnits =
+                  marker.kind === 'path' && scene.grid.enabled && marker.points && marker.points.length >= 2
+                    ? computePolylineUnits(
+                        marker.points,
+                        mapBoxSize.width,
+                        mapBoxSize.height,
+                        scene.grid.cellSizePx,
+                        scene.grid.unitValue
+                      )
+                    : 0;
+
+                const captionText =
+                  marker.kind === 'token'
+                    ? `${marker.authorName} · ${marker.tokenName || marker.label || 'Alvo'}`
+                    : marker.kind === 'path'
+                      ? `${marker.authorName}${marker.tokenName ? ` · ${marker.tokenName}` : ' · Ir aqui'}${
+                          distUnits >= 0.3 ? ` · ${distUnits.toFixed(1)}${scene.grid.unitLabel}` : ''
+                        }`
+                      : `${marker.authorName} · ${marker.label || 'Aqui'}`;
+
+                return (
+                  <div
+                    key={marker.id}
+                    style={{
+                      left: `${posX * 100}%`,
+                      top: `${posY * 100}%`,
+                      opacity: fadeAlpha,
+                      transition: 'opacity 300ms linear',
+                    }}
+                    className="absolute"
+                  >
+                    {marker.kind === 'token' ? (
+                      <>
+                        {/* Animated Token Target Lock Halo */}
+                        <div
+                          style={{
+                            width: `${tokenSpan}px`,
+                            height: `${tokenSpan}px`,
+                            borderColor: marker.color,
+                            boxShadow: `0 0 20px ${marker.color}88, inset 0 0 12px ${marker.color}33`,
+                          }}
+                          className="absolute rounded-full border-2 player-token-lock pointer-events-none"
+                        />
+                        <div
+                          style={{
+                            width: `${tokenSpan + 10}px`,
+                            height: `${tokenSpan + 10}px`,
+                            borderColor: marker.color,
+                          }}
+                          className="absolute rounded-full border player-ping-ripple pointer-events-none"
+                        />
+                      </>
+                    ) : (
+                      <>
+                        {/* Point & Click Ground Reticle Ripples */}
+                        <div
+                          style={{
+                            width: '44px',
+                            height: '44px',
+                            borderColor: marker.color,
+                          }}
+                          className="absolute rounded-full border-2 player-ping-ripple pointer-events-none"
+                        />
+                        <div
+                          style={{
+                            width: '44px',
+                            height: '44px',
+                            borderColor: marker.color,
+                          }}
+                          className="absolute rounded-full border player-ping-ripple-delayed pointer-events-none"
+                        />
+                        <div
+                          style={{
+                            width: '18px',
+                            height: '18px',
+                            borderColor: marker.color,
+                            backgroundColor: `${marker.color}28`,
+                            boxShadow: `0 0 12px ${marker.color}bb`,
+                          }}
+                          className="absolute rounded-full border-2 player-ping-beacon pointer-events-none flex items-center justify-center"
+                        >
+                          <div
+                            style={{ backgroundColor: marker.color }}
+                            className="w-2 h-2 rotate-45"
+                          />
+                        </div>
+                      </>
+                    )}
+
+                    {/* Floating Crisp Author / Destination Label + GM/Owner Dismiss X */}
+                    <div
+                      style={{
+                        transform: `translate(-50%, ${marker.kind === 'token' ? -(tokenSpan / 2 + 26) : -38}px)`,
+                        borderColor: `${marker.color}99`,
+                      }}
+                      className="absolute flex items-center gap-1.5 px-2 py-0.5 bg-stone-950/92 border text-stone-100 text-[11px] font-medium whitespace-nowrap shadow-xl pointer-events-auto"
+                    >
+                      <span
+                        style={{ backgroundColor: marker.color }}
+                        className="w-2 h-2 shrink-0 rotate-45"
+                      />
+                      <span className="max-w-[200px] truncate">{captionText}</span>
+                      {canDismiss && onRemovePlayerMarker && (
+                        <button
+                          type="button"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDismissMarker(marker.id);
+                          }}
+                          className="ml-0.5 p-0.5 text-stone-400 hover:text-white hover:bg-white/15 transition-colors"
+                          title="Apagar esta marcação"
+                          aria-label="Apagar marcação"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
 
         {/* Ephemeral Quick Ruler Layer */}
         {ruler && (
@@ -2950,6 +3523,108 @@ export function TabletopCanvas({
             </button>
           </div>
         )}
+
+      {/* GM Quick Dismiss Control whenever players have active temporary pings/paths on this scene */}
+      {mode === 'gm' && !effectiveDuel && activePlayerMarkers.length > 0 && onClearPlayerMarkers && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute top-3 right-3 z-30 flex items-center gap-1.5 vtt-surface/95 backdrop-blur-sm border vtt-border px-2.5 py-1.5 shadow-xl"
+        >
+          <span className="text-[11px] vtt-muted whitespace-nowrap tabular-nums">
+            {activePlayerMarkers.length} marcaç{activePlayerMarkers.length === 1 ? 'ão' : 'ões'} de jogadores
+          </span>
+          <button
+            type="button"
+            onClick={() => handleClearMarkers('all')}
+            className="px-2 py-1 text-[11px] font-semibold border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1 whitespace-nowrap shrink-0"
+            title="Apagar imediatamente todas as marcações e caminhos dos jogadores nesta cena"
+          >
+            <X className="w-3.5 h-3.5" />
+            Limpar
+          </button>
+        </div>
+      )}
+
+      {/* Player Point & Click Indication HUD Bar (Select Token, Mark Location, Trace Path — read-only) */}
+      {mode === 'player' && !effectiveDuel && onPublishPlayerMarker && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-30 vtt-surface/95 backdrop-blur-md border vtt-border px-2 py-1.5 shadow-2xl flex items-center gap-1.5 max-w-[96%] overflow-x-auto"
+        >
+          <div className="flex items-center border vtt-border vtt-canvas shrink-0">
+            <button
+              type="button"
+              onClick={() => setPlayerTool('point')}
+              className={`min-h-[36px] px-2.5 py-1 text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                playerTool === 'point' ? 'vtt-accent-btn font-semibold' : 'vtt-muted hover:opacity-100'
+              }`}
+              title="Clique em um token para selecionar e clique no mapa para indicar destino, ou clique em qualquer lugar para marcar"
+            >
+              <MousePointerClick className="w-3.5 h-3.5 shrink-0" />
+              <span>Apontar / Ir</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setPlayerTool('path')}
+              className={`min-h-[36px] px-2.5 py-1 text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                playerTool === 'path' ? 'vtt-accent-btn font-semibold' : 'vtt-muted hover:opacity-100'
+              }`}
+              title="Arraste sobre o mapa para traçar um caminho temporário até onde deseja ir"
+            >
+              <Route className="w-3.5 h-3.5 shrink-0" />
+              <span>Traçar Caminho</span>
+            </button>
+          </div>
+
+          {playerSelectedToken && (
+            <div className="flex items-center gap-1.5 pl-1.5 border-l vtt-border shrink-0">
+              <span className="text-xs font-semibold max-w-[110px] truncate" title={playerSelectedToken.name}>
+                {playerSelectedToken.name}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  emitPlayerMarker({
+                    kind: 'token',
+                    x: playerSelectedToken.x,
+                    y: playerSelectedToken.y,
+                    tokenId: playerSelectedToken.id,
+                    tokenName: playerSelectedToken.name,
+                    label: playerSelectedToken.name,
+                  });
+                  onNotify?.(`Sinalizou "${playerSelectedToken.name}" para o mestre.`);
+                }}
+                className="min-h-[36px] px-2 py-1 text-[11px] font-semibold border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1 whitespace-nowrap shrink-0"
+                title="Destacar este token no mapa para o mestre e outros jogadores"
+              >
+                <Crosshair className="w-3.5 h-3.5 vtt-accent-text shrink-0" />
+                <span>Sinalizar</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setPlayerSelectedTokenId(null)}
+                className="min-h-[36px] px-1.5 py-1 vtt-muted hover:opacity-100 shrink-0"
+                title="Desmarcar token selecionado"
+                aria-label="Desmarcar token"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {myActiveMarkersCount > 0 && onClearPlayerMarkers && (
+            <button
+              type="button"
+              onClick={() => handleClearMarkers('mine')}
+              className="min-h-[36px] px-2 py-1 text-[11px] border vtt-border vtt-canvas hover:vtt-subtle flex items-center gap-1 whitespace-nowrap shrink-0 ml-0.5"
+              title="Apagar minhas marcações temporárias desta cena"
+            >
+              <Trash2 className="w-3.5 h-3.5 shrink-0" />
+              <span>Limpar ({myActiveMarkersCount})</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Floating Map Zoom & Pan Controls (Zooms unified stage without shifting tokens, walls, or fog) */}
       {(mode === 'gm' || mode === 'player') && !effectiveDuel && (

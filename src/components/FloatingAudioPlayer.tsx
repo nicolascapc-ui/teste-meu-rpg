@@ -457,7 +457,7 @@ export function FloatingAudioPlayer({
               </label>
 
               <label className="flex items-center justify-between gap-2 pt-1 cursor-pointer">
-                <span className="text-[10px]">Áudio automático nas cenas</span>
+                <span className="text-[10px]">Áudio automático nas cenas e duelos</span>
                 <input
                   type="checkbox"
                   checked={autoPlay}
@@ -465,8 +465,8 @@ export function FloatingAudioPlayer({
                     audioEngine.setAutoPlayEnabled(e.target.checked);
                     onNotify?.(
                       e.target.checked
-                        ? 'Áudio automático nas cenas e combates ativado.'
-                        : 'Áudio automático desligado: suas faixas continuam tocando ao trocar de cena.'
+                        ? 'Áudio automático nas cenas e duelos ativado.'
+                        : 'Áudio automático desligado: nenhuma música troca sozinha em cenas ou duelos.'
                     );
                   }}
                 />

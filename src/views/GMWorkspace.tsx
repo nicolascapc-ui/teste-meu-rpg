@@ -103,6 +103,7 @@ import { buildAppUrl } from '../lib/router';
 import {
   activateScene,
   broadcastLiveState,
+  clearPlayerMapMarkers,
   createAudioTrack,
   createCharacterSheet,
   createHandout,
@@ -116,6 +117,7 @@ import {
   projectHandoutToAll,
   recordDiceRoll,
   removeInvestigationJournalEntry,
+  removePlayerMapMarker,
   saveInvestigationJournalEntry,
   sendHandoutToPlayer,
   subscribeCampaignDoc,
@@ -1671,8 +1673,8 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       [activeScene.id]: scopedDuel,
     }));
 
-    // Pause/stop the scene's music & ambience and give full stage to the duel music (synced live to players/TV!)
-    if (activeScene.id === campaign.activeSceneId) {
+    // Pause/stop the scene's music & ambience and give full stage to the duel music ONLY when auto-play is enabled
+    if (activeScene.id === campaign.activeSceneId && audioEngine.isAutoPlayEnabled()) {
       const activeBefore = audioEngine.getActiveTrackIds();
       preDuelMusicIdRef.current = activeBefore.musicId || activeScene.linkedMusicId || null;
       preDuelAmbienceIdRef.current =
@@ -1704,6 +1706,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         audioEngine.stopLayer('music', 450);
       }
       setAudioIds(audioEngine.getActiveTrackIds());
+    } else if (!audioEngine.isAutoPlayEnabled()) {
+      preDuelMusicIdRef.current = null;
+      preDuelAmbienceIdRef.current = null;
     }
 
     if (activeScene.id === campaign.activeSceneId) {
@@ -1738,8 +1743,12 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       [targetScene.id]: scopedDuel,
     }));
 
-    // Sync any music change selected directly inside the 3D arena
-    if (scopedDuel.musicTrackId && scopedDuel.musicTrackId !== prevMusicId) {
+    // Sync any music change selected directly inside the 3D arena (only when automatic audio switching is enabled)
+    if (
+      audioEngine.isAutoPlayEnabled() &&
+      scopedDuel.musicTrackId &&
+      scopedDuel.musicTrackId !== prevMusicId
+    ) {
       const mTrack = audioTracks.find((t) => t.id === scopedDuel.musicTrackId);
       if (mTrack && audioEngine.getActiveTrackIds().musicId !== mTrack.id) {
         try {
@@ -1839,8 +1848,8 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
       }
     }
 
-    // Stop duel music and smoothly restore the scene's previous music & ambience when combat ends!
-    if (targetScene.id === campaign.activeSceneId) {
+    // Stop duel music and smoothly restore the scene's previous music & ambience ONLY when auto-play is enabled
+    if (targetScene.id === campaign.activeSceneId && audioEngine.isAutoPlayEnabled()) {
       const restoreMusicId = preDuelMusicIdRef.current || targetScene.linkedMusicId || null;
       const restoreAmbienceId =
         preDuelAmbienceIdRef.current || targetScene.linkedAmbienceId || null;
@@ -1873,6 +1882,9 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
         preDuelMusicIdRef.current = null;
         preDuelAmbienceIdRef.current = null;
       }
+    } else {
+      preDuelMusicIdRef.current = null;
+      preDuelAmbienceIdRef.current = null;
     }
     setAudioIds(audioEngine.getActiveTrackIds());
     notify(`Modo Duelo 3D encerrado em "${targetScene.name}".`);
@@ -3017,6 +3029,18 @@ export function GMWorkspace({ user, campaignId, onExit }: GMWorkspaceProps) {
                 onOpenInvestigationToken={handleOpenInvestigationToken}
                 onToolChange={setActiveTool}
                 onNotify={notify}
+                playerMarkers={liveState?.playerMarkers || []}
+                currentUserUid={user.uid}
+                currentUserName={user.displayName || 'Mestre'}
+                onRemovePlayerMarker={(markerId) => {
+                  void removePlayerMapMarker(campaign.id, markerId, liveStateRef.current);
+                }}
+                onClearPlayerMarkers={() => {
+                  void clearPlayerMapMarkers(campaign.id, liveStateRef.current, {
+                    sceneId: activeScene?.id,
+                  });
+                  notify('Marcações dos jogadores removidas do mapa.');
+                }}
               />
 
               {/* Fullscreen 3D Turn-Based Confrontation / Duel Arena (inside SceneEffectsStage so CRT & FX apply!) */}

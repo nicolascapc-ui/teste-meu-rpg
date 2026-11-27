@@ -45,6 +45,7 @@ import {
   type LivePublicWiki,
   type LiveSceneSnapshot,
   type LiveTableState,
+  type PlayerMapMarker,
   type PublicNoteSummary,
   type PublicRollSummary,
   type RollOutcome,
@@ -1981,5 +1982,123 @@ export async function deletePrivateChatMessage(campaignId: string, messageId: st
     await deleteDoc(doc(db, 'campaigns', campaignId, 'chatMessages', messageId));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `campaigns/${campaignId}/chatMessages/${messageId}`);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Temporary Player Point & Click Map Markers, Paths & Token Indicators
+// -----------------------------------------------------------------------------
+function sanitizePlayerMapMarker(marker: PlayerMapMarker): PlayerMapMarker {
+  const clampCoord = (v: number) => Number(Math.max(0, Math.min(1, Number(v) || 0)).toFixed(4));
+  const cleanPoints = Array.isArray(marker.points)
+    ? marker.points.slice(0, 40).map((p) => ({ x: clampCoord(p.x), y: clampCoord(p.y) }))
+    : undefined;
+  return stripUndefinedDeep({
+    id: clampStr(marker.id, 64) || makeId('pmk'),
+    sceneId: clampStr(marker.sceneId, FIELD_LIMITS.MEDIA_ID),
+    kind: marker.kind === 'path' || marker.kind === 'token' ? marker.kind : 'ping',
+    authorUid: clampStr(marker.authorUid, FIELD_LIMITS.MEDIA_ID),
+    authorName: clampStr(marker.authorName, FIELD_LIMITS.DISPLAY_NAME) || 'Jogador',
+    color: clampStr(marker.color, 24) || '#38bdf8',
+    label: marker.label ? clampStr(marker.label, 80) : undefined,
+    x: clampCoord(marker.x),
+    y: clampCoord(marker.y),
+    points: cleanPoints && cleanPoints.length >= 2 ? cleanPoints : undefined,
+    tokenId: marker.tokenId ? clampStr(marker.tokenId, 80) : undefined,
+    tokenName: marker.tokenName ? clampStr(marker.tokenName, 80) : undefined,
+    createdAtMs: Number(marker.createdAtMs) || Date.now(),
+    expiresAtMs: Number(marker.expiresAtMs) || Date.now() + 22000,
+  });
+}
+
+export async function publishPlayerMapMarker(
+  campaignId: string,
+  marker: PlayerMapMarker,
+  currentLiveState: LiveTableState | null
+) {
+  const now = Date.now();
+  const clean = sanitizePlayerMapMarker(marker);
+  const existing = (currentLiveState?.playerMarkers || []).filter(
+    (m) => m && m.expiresAtMs > now && m.id !== clean.id
+  );
+
+  // Keep at most 3 active markers per player so the map stays clear and readable
+  const otherMarkers = existing.filter((m) => m.authorUid !== clean.authorUid);
+  const myMarkers = existing.filter((m) => m.authorUid === clean.authorUid).slice(-2);
+  const nextMarkers = [...otherMarkers, ...myMarkers, clean].slice(
+    -FIELD_LIMITS.MAX_PLAYER_MARKERS
+  );
+
+  if (currentLiveState) {
+    broadcastLiveState(campaignId, {
+      ...currentLiveState,
+      playerMarkers: nextMarkers,
+    });
+  }
+
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      playerMarkers: nextMarkers,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
+  }
+}
+
+export async function removePlayerMapMarker(
+  campaignId: string,
+  markerId: string,
+  currentLiveState: LiveTableState | null
+) {
+  const now = Date.now();
+  const nextMarkers = (currentLiveState?.playerMarkers || []).filter(
+    (m) => m && m.id !== markerId && m.expiresAtMs > now
+  );
+
+  if (currentLiveState) {
+    broadcastLiveState(campaignId, {
+      ...currentLiveState,
+      playerMarkers: nextMarkers,
+    });
+  }
+
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      playerMarkers: nextMarkers,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
+  }
+}
+
+export async function clearPlayerMapMarkers(
+  campaignId: string,
+  currentLiveState: LiveTableState | null,
+  options?: { sceneId?: string; authorUid?: string }
+) {
+  const now = Date.now();
+  const nextMarkers = (currentLiveState?.playerMarkers || []).filter((m) => {
+    if (!m || m.expiresAtMs <= now) return false;
+    const matchesScene = !options?.sceneId || m.sceneId === options.sceneId;
+    const matchesAuthor = !options?.authorUid || m.authorUid === options.authorUid;
+    return !(matchesScene && matchesAuthor);
+  });
+
+  if (currentLiveState) {
+    broadcastLiveState(campaignId, {
+      ...currentLiveState,
+      playerMarkers: nextMarkers,
+    });
+  }
+
+  try {
+    await updateDoc(doc(db, 'campaigns', campaignId, 'live', 'state'), {
+      playerMarkers: nextMarkers,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `campaigns/${campaignId}/live/state`);
   }
 }

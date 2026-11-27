@@ -128,7 +128,7 @@ service cloud.firestore {
 
     function isValidLiveState(data, campaignId) {
       return data.keys().hasAll(['campaignId', 'gmUid', 'campaignTitle', 'theme', 'activeScene', 'activeHandout', 'recentPublicRolls', 'updatedAt']) &&
-        data.keys().hasOnly(['campaignId', 'gmUid', 'campaignTitle', 'theme', 'activeScene', 'activeHandout', 'interludeConfig', 'liveAudio', 'investigationJournal', 'recentPublicRolls', 'shakePulseMs', 'updatedAt']) &&
+        data.keys().hasOnly(['campaignId', 'gmUid', 'campaignTitle', 'theme', 'activeScene', 'activeHandout', 'interludeConfig', 'liveAudio', 'investigationJournal', 'playerMarkers', 'recentPublicRolls', 'shakePulseMs', 'updatedAt']) &&
         isValidId(data.campaignId) && data.campaignId == campaignId &&
         isValidId(data.gmUid) &&
         data.campaignTitle is string && data.campaignTitle.size() >= 1 && data.campaignTitle.size() <= 120 &&
@@ -138,6 +138,7 @@ service cloud.firestore {
         (!('interludeConfig' in data) || data.interludeConfig == null || data.interludeConfig is map) &&
         (!('liveAudio' in data) || data.liveAudio == null || data.liveAudio is map) &&
         (!('investigationJournal' in data) || (data.investigationJournal is list && data.investigationJournal.size() <= 80 && (data.investigationJournal.size() == 0 || data.investigationJournal[0] is map))) &&
+        (!('playerMarkers' in data) || (data.playerMarkers is list && data.playerMarkers.size() <= 30 && (data.playerMarkers.size() == 0 || data.playerMarkers[0] is map))) &&
         data.recentPublicRolls is list && data.recentPublicRolls.size() <= 40 &&
         (data.recentPublicRolls.size() == 0 || data.recentPublicRolls[0] is map) &&
         (!('shakePulseMs' in data) || data.shakePulseMs is number) &&
@@ -437,11 +438,12 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           (
             (isCampaignGM(campaignId) &&
-              incoming().diff(existing()).affectedKeys().hasOnly(['campaignTitle', 'theme', 'activeScene', 'activeHandout', 'interludeConfig', 'liveAudio', 'investigationJournal', 'recentPublicRolls', 'shakePulseMs', 'updatedAt'])) ||
+              incoming().diff(existing()).affectedKeys().hasOnly(['campaignTitle', 'theme', 'activeScene', 'activeHandout', 'interludeConfig', 'liveAudio', 'investigationJournal', 'playerMarkers', 'recentPublicRolls', 'shakePulseMs', 'updatedAt'])) ||
             (isCampaignMember(campaignId) &&
               (
                 incoming().diff(existing()).affectedKeys().hasOnly(['recentPublicRolls', 'updatedAt']) ||
-                incoming().diff(existing()).affectedKeys().hasOnly(['investigationJournal', 'updatedAt'])
+                incoming().diff(existing()).affectedKeys().hasOnly(['investigationJournal', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['playerMarkers', 'updatedAt'])
               ))
           );
         allow delete: if isVerified() && isValidId(campaignId) && isCampaignGM(campaignId);
